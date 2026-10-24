@@ -1,0 +1,68 @@
+[project]
+name = "finance-automation"
+version = "0.1.0"
+description = "Finance Automation for contract and installment management"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.6.1",
+    "python-dotenv==1.0.1",
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    "asyncpg==0.29.0",
+    "psycopg2-binary==2.9.10",
+    "python-json-logger==2.0.7",
+    "faker==25.3.0",
+    "python-multipart==0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.23.8",
+    "httpx==0.28.1",
+    "ruff==0.7.3",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function calls in default args
+]
+per-file-ignores = { "alembic/*" = ["E501"], "app/scripts/*" = ["E501"] }
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.alembic]
+# This section is for reference, actual config is in alembic.ini
+script_location = "alembic"
+prepend_sys_path = "."
+version_path_separator = "os"
