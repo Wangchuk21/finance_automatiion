@@ -1,10 +1,44 @@
 """Pydantic schemas for uploads API."""
 
+import calendar
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _parse_as_of_date(v: Any) -> date:
+    """
+    Accept:
+      - datetime.date objects  → returned as-is
+      - "YYYY-MM-DD" strings  → parsed as date
+      - "YYYY-MM" strings     → converted to the LAST day of that month
+    Reject:
+      - dates in the future   → HTTP 422
+    """
+    if isinstance(v, date):
+        parsed = v
+    elif isinstance(v, str):
+        v = v.strip()
+        if re.fullmatch(r"\d{4}-\d{2}", v):
+            year, month = int(v[:4]), int(v[5:7])
+            last_day = calendar.monthrange(year, month)[1]
+            parsed = date(year, month, last_day)
+        else:
+            try:
+                parsed = date.fromisoformat(v)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid date format '{v}'. Use YYYY-MM-DD or YYYY-MM."
+                )
+    else:
+        raise ValueError("as_of_date must be a date string.")
+
+    if parsed > date.today():
+        raise ValueError("as_of_date cannot be in the future.")
+    return parsed
 
 
 class UploadCreate(BaseModel):
@@ -13,6 +47,11 @@ class UploadCreate(BaseModel):
     as_of_date: date
     sheet_name: Optional[str] = None
     header_row: Optional[int] = None
+
+    @field_validator("as_of_date", mode="before")
+    @classmethod
+    def validate_as_of_date(cls, v: Any) -> date:
+        return _parse_as_of_date(v)
 
 
 class ValidationIssueSchema(BaseModel):
@@ -127,28 +166,3 @@ class MissingContractActionResponse(BaseModel):
     total_missing: int
     action: str
     message: str
-
-
-class UploadResponse(BaseModel):
-    """Upload response."""
-    id: int
-    file_name: str
-    status: str
-    as_of_date: date
-    uploaded_at: datetime
-    preview: Optional[UploadPreviewResponse] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class UploadConfirmRequest(BaseModel):
-    """Request to confirm an upload."""
-    totp_code: str = Field(..., min_length=6, max_length=6)
-
-
-class UploadStatusResponse(BaseModel):
-    """Status response after confirm/rollback."""
-    id: int
-    status: str
-    message: str
-    details: Optional[Dict[str, Any]] = None

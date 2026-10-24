@@ -63,7 +63,7 @@ export function UploadPage() {
   const [totpCode, setTotpCode] = React.useState("");
   const [asOfDate, setAsOfDate] = React.useState(() => {
     const today = new Date();
-    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+    return today.toISOString().slice(0, 10); // YYYY-MM-DD
   });
 
   const onDrop = React.useCallback((acceptedFiles: File[]) => {
@@ -212,7 +212,13 @@ function UploadStep({
             <CardContent className="space-y-4">
               <div>
                 <Label htmlFor="as_of_date">As-of Date</Label>
-                <Input id="as_of_date" type="month" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} />
+                <Input
+                  id="as_of_date"
+                  type="date"
+                  max={new Date().toISOString().slice(0, 10)}
+                  value={asOfDate}
+                  onChange={(e) => setAsOfDate(e.target.value)}
+                />
                 <p className="text-sm text-text-secondary mt-1">The date this data represents</p>
               </div>
 

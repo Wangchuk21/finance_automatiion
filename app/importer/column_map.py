@@ -804,11 +804,23 @@ def reshape_month_columns(
             month_data[key]["status"] = "not_deducted"
             # Amount remains empty (None)
         elif col_type == "salary":
-            month_data[key]["salary_amount"] = parse_amount(value)
+            parsed = parse_amount(value)
+            if parsed is None and str_val not in ("", "n/a", "na", "-", "nil", "none"):
+                month_data[key]["not_status"] = "note"
+            else:
+                month_data[key]["salary_amount"] = parsed
         elif col_type == "external":
-            month_data[key]["external_amount"] = parse_amount(value)
+            parsed = parse_amount(value)
+            if parsed is None and str_val not in ("", "n/a", "na", "-", "nil", "none"):
+                month_data[key]["not_status"] = "note"
+            else:
+                month_data[key]["external_amount"] = parsed
         elif col_type == "received":
-            month_data[key]["received_amount"] = parse_amount(value)
+            parsed = parse_amount(value)
+            if parsed is None and str_val not in ("", "n/a", "na", "-", "nil", "none"):
+                month_data[key]["not_status"] = "note"
+            else:
+                month_data[key]["received_amount"] = parsed
         elif col_type == "deducted":
             month_data[key]["deducted_amount"] = parse_amount(value)
         elif col_type in ("not_received", "not_deducted"):
@@ -818,6 +830,7 @@ def reshape_month_columns(
                 month_data[key]["status"] = col_type
         elif str_val in ("pending", "paid", "partial", "overdue", "waived"):
             month_data[key]["status"] = str_val
+
     
     # Convert to list of rows – emit ALL months (including blank ones)
     result = []

@@ -1,6 +1,7 @@
 """Upload API endpoints."""
 
 import json
+import logging
 import os
 import shutil
 from collections import defaultdict
@@ -31,6 +32,7 @@ from app.schemas.uploads import (
     ComparisonPreviewResponse,
     MissingContractActionRequest,
     MissingContractActionResponse,
+    _parse_as_of_date,
 )
 
 router = APIRouter(tags=["uploads"])
@@ -95,6 +97,12 @@ async def create_upload(
     Step 1: Upload file and parse.
     Returns validation report and preview.
     """
+    # Validate and normalise as_of_date (accepts YYYY-MM-DD or YYYY-MM; rejects future)
+    try:
+        as_of_date_parsed: date = _parse_as_of_date(as_of_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
     # Validate file type
     allowed_extensions = {".xlsx", ".xls"}
     file_ext = Path(file.filename).suffix.lower()
@@ -103,7 +111,7 @@ async def create_upload(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
         )
-    
+
     # Validate file size
     file_content = await file.read()
     if len(file_content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
@@ -111,10 +119,10 @@ async def create_upload(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File too large. Max size: {settings.MAX_UPLOAD_SIZE_MB}MB"
         )
-    
+
     # Calculate checksum
     checksum = calculate_file_checksum_from_bytes(file_content)
-    
+
     # Check for duplicate
     existing = await session.execute(
         select(Upload).where(Upload.checksum == checksum)
@@ -124,28 +132,25 @@ async def create_upload(
             status_code=status.HTTP_409_CONFLICT,
             detail="File with identical content already uploaded"
         )
-    
+
     # Validate upload rules
-    # Get last confirmed upload for date validation
     from app.importer.comparison import get_last_confirmed_upload, validate_upload_rules
     last_confirmed = await get_last_confirmed_upload(session)
     if last_confirmed:
-        temp_upload = Upload(as_of_date=date.fromisoformat(as_of_date))
+        temp_upload = Upload(as_of_date=as_of_date_parsed)
         rules_result = await validate_upload_rules(session, temp_upload)
-        # validate_upload_rules returns a list of strings (errors + warnings)
-        # Filter to get only errors (those that don't start with "Same as-of date" or "Last confirmed")
         errors = [msg for msg in rules_result if not msg.startswith("Same as-of date") and not msg.startswith("Last confirmed")]
         if errors:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="; ".join(errors)
             )
-    
+
     # Save file temporarily
     temp_path = UPLOAD_DIR / f"temp_{checksum}{file_ext}"
     with open(temp_path, "wb") as f:
         f.write(file_content)
-    
+
     try:
         # Parse and validate
         contracts, report, preview = import_excel_file(
@@ -153,31 +158,40 @@ async def create_upload(
             sheet_name=sheet_name,
             header_row=header_row,
         )
-        
+
         # Convert defaultdict to dict for JSON serialization
         clean_preview = _convert_defaultdict_to_dict(preview)
-        
-        # Create upload record
-        upload = Upload(
-            file_name=file.filename,
-            checksum=checksum,
-            uploaded_by=current_user.id,
-            as_of_date=as_of_date,
-            status=UploadStatus.PENDING,
-            summary=_serialize_summary(clean_preview),
-        )
-        session.add(upload)
-        await session.flush()
-        
-        # Store parsed contracts in upload summary for preview
-        upload.summary = _serialize_summary({
-            **clean_preview,
-            "validation_report": report.to_dict(),
-            "contracts_count": len(contracts),
-            "temp_file": str(temp_path),
-        })
-        await session.commit()
-        
+
+        # --- Save upload record (DB errors isolated here) ---
+        try:
+            upload = Upload(
+                file_name=file.filename,
+                checksum=checksum,
+                uploaded_by=current_user.id,
+                as_of_date=as_of_date_parsed,
+                status=UploadStatus.PENDING,
+                summary=_serialize_summary(clean_preview),
+            )
+            session.add(upload)
+            await session.flush()
+
+            upload.summary = _serialize_summary({
+                **clean_preview,
+                "validation_report": report.to_dict(),
+                "contracts_count": len(contracts),
+                "temp_file": str(temp_path),
+            })
+            await session.commit()
+        except Exception as db_exc:
+            logger.error("DB error saving upload record", exc_info=True)
+            await session.rollback()
+            if temp_path.exists():
+                temp_path.unlink()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not save the upload record."
+            )
+
         return UploadResponse(
             id=upload.id,
             file_name=upload.file_name,
@@ -190,15 +204,16 @@ async def create_upload(
                 monthly_breakdown=preview.get("monthly_breakdown", {}),
             ),
         )
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error parsing upload: {e}")
-        # Cleanup temp file
+        logger.error("Error parsing upload file", exc_info=True)
         if temp_path.exists():
             temp_path.unlink()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse file: {str(e)}"
+            detail="Could not parse the uploaded file. Check that it is a valid Excel sheet."
         )
 
 

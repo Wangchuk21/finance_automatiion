@@ -843,6 +843,81 @@ class TestReconciliationAndDueAmount:
         assert installments[2]["due_amount"] == Decimal("5000.00")
 
 
+class TestNoteCellHandling:
+    """Month cell with unparseable text → cell_status='note', no value in messages."""
+
+    def test_text_cell_with_digits_and_name(self):
+        from app.importer.column_map import reshape_month_columns, map_sheet_columns
+        from app.importer.validation import validate_excel_import, ValidationReport
+        from datetime import date
+
+        # Build a minimal month_column_map with one external month column
+        month_column_map = {"Feb-25": ("external", 2, 2025)}
+
+        # Row: text that contains digits and a name - must NOT appear in any message
+        row = {"Feb-25": "John 500"}
+
+        installments = reshape_month_columns(row, month_column_map)
+        assert len(installments) == 1
+        inst = installments[0]
+        # Amount must be NULL (not guessed)
+        assert inst.get("external_amount") is None
+        assert inst.get("salary_amount") is None
+        # cell_status must be 'note'
+        assert inst.get("not_status") == "note"
+
+        # Now check validation: the warning message must not contain the cell value
+        from app.importer.reader import ParsedSheet
+        headers = ["Reference", "Feb-25"]
+        rows = [{"Reference": "REF-001", "Feb-25": "John 500"}]
+        static_cols = {"reference": "Reference"}
+        parsed = ParsedSheet(
+            sheet_name="Sheet1",
+            headers=headers,
+            rows=rows,
+            month_columns=month_column_map,
+            static_columns=static_cols,
+        )
+        report = validate_excel_import(rows, month_column_map, static_cols)
+        all_messages = " ".join(
+            issue["message"] for issue in report.to_dict().get("issues", [])
+        )
+        # The cell value must not appear verbatim in any message
+        assert "John 500" not in all_messages
+        assert "500" not in all_messages or "John" not in all_messages  # at minimum no combined personal text
+
+
+# ---------------------------------------------------------------------------
+# as_of_date schema validator tests
+# ---------------------------------------------------------------------------
+
+class TestAsOfDateValidator:
+    """Tests for _parse_as_of_date in app/schemas/uploads.py."""
+
+    def test_yyyy_mm_dd_accepted(self):
+        from app.schemas.uploads import _parse_as_of_date
+        from datetime import date
+        result = _parse_as_of_date("2025-03-15")
+        assert result == date(2025, 3, 15)
+
+    def test_yyyy_mm_converted_to_month_end(self):
+        from app.schemas.uploads import _parse_as_of_date
+        from datetime import date
+        # February 2025 has 28 days
+        result = _parse_as_of_date("2025-02")
+        assert result == date(2025, 2, 28)
+        # January 2025 has 31 days
+        result = _parse_as_of_date("2025-01")
+        assert result == date(2025, 1, 31)
+
+    def test_future_date_rejected_with_422(self):
+        from app.schemas.uploads import _parse_as_of_date
+        from datetime import date, timedelta
+        future = (date.today() + timedelta(days=1)).isoformat()
+        with pytest.raises(ValueError, match="cannot be in the future"):
+            _parse_as_of_date(future)
+
+
 # ---------------------------------------------------------------------------
 # DB-write tests – run against finance_test (never finance_automation)
 # ---------------------------------------------------------------------------

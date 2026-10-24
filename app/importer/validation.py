@@ -237,10 +237,9 @@ def validate_excel_import(
                     if status not in ("not received", "not deducted", "pending", "paid", "partial", "overdue", "waived", "n/a", "na", "-", "", "nil"):
                         report.add_warning(
                             "unparseable_month_value",
-                            f"Could not parse {col_type} value for {month}/{year}: '{value}'",
+                            f"Month cell contains text instead of an amount (ref={ref!r}, row={row_num}, col={orig_col})",
                             row=row_num,
                             column=orig_col,
-                            value=value
                         )
                 elif parsed < 0:
                     report.add_error(
