@@ -12,92 +12,69 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-
-// Mock data - replace with API calls
-const mockKPIs = [
-  {
-    title: "Total Receivable",
-    value: "₹1,22,64,000",
-    change: 3.2,
-    changeLabel: "last upload",
-    trend: "up" as const,
-  },
-  {
-    title: "Collected",
-    value: "₹87,45,000",
-    change: 5.1,
-    changeLabel: "last upload",
-    trend: "up" as const,
-  },
-  {
-    title: "Overdue",
-    value: "₹35,19,000",
-    change: -2.1,
-    changeLabel: "last upload",
-    trend: "down" as const,
-  },
-  {
-    title: "Critical Accounts",
-    value: "142",
-    change: 12,
-    changeLabel: "last upload",
-    trend: "up" as const,
-  },
-];
-
-const mockRegionData = [
-  { region: "North", receivable: 4500000, collected: 3200000, overdue: 1300000 },
-  { region: "South", receivable: 3800000, collected: 2900000, overdue: 900000 },
-  { region: "East", receivable: 2500000, collected: 1800000, overdue: 700000 },
-  { region: "West", receivable: 1500000, collected: 850000, overdue: 650000 },
-];
-
-const mockAgingData = [
-  { bucket: "0-30", amount: 4200000, count: 89 },
-  { bucket: "31-60", amount: 2800000, count: 56 },
-  { bucket: "61-90", amount: 1500000, count: 34 },
-  { bucket: "91-120", amount: 900000, count: 21 },
-  { bucket: "120+", amount: 600000, count: 18 },
-];
-
-const mockTrendData = [
-  { month: "May", internal: 1200000, external: 800000, total: 2000000 },
-  { month: "Jun", internal: 1350000, external: 900000, total: 2250000 },
-  { month: "Jul", internal: 1400000, external: 950000, total: 2350000 },
-  { month: "Aug", internal: 1500000, external: 1000000, total: 2500000 },
-  { month: "Sep", internal: 1650000, external: 1100000, total: 2750000 },
-  { month: "Oct", internal: 1800000, external: 1200000, total: 3000000 },
-];
-
-const mockAttentionItems = [
-  {
-    id: "1",
-    type: "missing_contract" as const,
-    title: "Missing contracts from last upload",
-    description: "14 contracts from Sep 24 upload not found in Oct 24 file",
-    count: 14,
-    actionLabel: "Review missing",
-    onAction: () => console.log("Review missing"),
-  },
-  {
-    id: "2",
-    type: "validation_warning" as const,
-    title: "Validation warnings in latest upload",
-    description: "3 contracts have mismatched payment type vs month columns",
-    count: 3,
-    actionLabel: "View warnings",
-    onAction: () => console.log("View warnings"),
-  },
-];
+import { dashboardApi, type DashboardData, type AttentionItem, type UploadRowData } from "@/lib/api";
 
 export function Dashboard() {
+  const [data, setData] = React.useState<DashboardData | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    async function fetchDashboard() {
+      try {
+        setLoading(true);
+        const result = await dashboardApi.getDashboard();
+        setData(result);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load dashboard");
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchDashboard();
+  }, []);
+
+  if (loading) {
+    return <DashboardSkeleton />;
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-text-primary">Dashboard</h1>
+            <p className="text-text-secondary mt-1">Failed to load data</p>
+          </div>
+        </div>
+        <Card className="border-critical/50 bg-critical-light/10 p-6">
+          <p className="text-critical">{error}</p>
+          <Button className="mt-4" onClick={() => window.location.reload()}>Retry</Button>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!data) return <DashboardSkeleton />;
+
+  const kpis = data.kpis;
+  const regions = data.regions;
+  const aging = data.aging;
+  const trend = data.trend;
+  const attention = data.attention;
+  const recentUploads = data.recentUploads;
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Dashboard</h1>
-          <p className="text-text-secondary mt-1">As of Oct 2024 • Last upload: 28 Oct 2024</p>
+          <p className="text-text-secondary mt-1">
+            {data.asOfDate ? `As of ${formatDate(data.asOfDate)}` : "No data"} •{" "}
+            {data.lastUploadAt ? `Last upload: ${formatDateTime(data.lastUploadAt)}` : "No uploads"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="primary">Internal</Badge>
@@ -107,7 +84,7 @@ export function Dashboard() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {mockKPIs.map((kpi, index) => (
+        {kpis.map((kpi, index) => (
           <KPICard key={index} {...kpi} />
         ))}
       </div>
@@ -117,15 +94,15 @@ export function Dashboard() {
         {/* Left Column - Charts */}
         <div className="lg:col-span-7 space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <RegionComparisonChart data={mockRegionData} />
-            <AgingBucketChart data={mockAgingData} />
+            <RegionComparisonChart data={regions} />
+            <AgingBucketChart data={aging} />
           </div>
-          <CollectionTrendChart data={mockTrendData} />
+          <CollectionTrendChart data={trend} />
         </div>
 
         {/* Right Column - Needs Attention + Quick Actions */}
         <div className="lg:col-span-5 space-y-6">
-          <NeedsAttentionCard items={mockAttentionItems} />
+          <NeedsAttentionCard items={attention} />
 
           {/* Quick Actions */}
           <Card>
@@ -161,24 +138,13 @@ export function Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                <UploadRow
-                  name="EMI_Oct_2024.xlsx"
-                  date="28 Oct 2024"
-                  status="confirmed"
-                  contracts={156}
-                />
-                <UploadRow
-                  name="EMI_Sep_2024.xlsx"
-                  date="25 Sep 2024"
-                  status="confirmed"
-                  contracts={148}
-                />
-                <UploadRow
-                  name="EMI_Aug_2024.xlsx"
-                  date="28 Aug 2024"
-                  status="confirmed"
-                  contracts={142}
-                />
+                {recentUploads.length === 0 ? (
+                  <p className="text-text-secondary text-center py-4">No uploads yet</p>
+                ) : (
+                  recentUploads.map((upload) => (
+                    <UploadRow key={upload.id} upload={upload} />
+                  ))
+                )}
               </div>
             </CardContent>
           </Card>
@@ -188,7 +154,77 @@ export function Dashboard() {
   );
 }
 
-function UploadRow({ name, date, status, contracts }: { name: string; date: string; status: string; contracts: number }) {
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-4 w-64 mt-1" />
+        </div>
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-6 w-20" />
+          <Skeleton className="h-6 w-20" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[1, 2, 3, 4].map((i) => <KPICardSkeleton key={i} />)}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="lg:col-span-7 space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartSkeleton />
+            <ChartSkeleton />
+          </div>
+          <ChartSkeleton />
+        </div>
+        <div className="lg:col-span-5 space-y-6">
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KPICardSkeleton() {
+  return (
+    <div className="kpi-card">
+      <Skeleton className="h-4 w-32 mb-2" />
+      <Skeleton className="h-8 w-24 mb-2" />
+      <Skeleton className="h-4 w-24" />
+    </div>
+  );
+}
+
+function ChartSkeleton() {
+  return (
+    <div className="card p-6 h-[350px]">
+      <Skeleton className="h-6 w-40 mb-4" />
+      <Skeleton className="h-full w-full" />
+    </div>
+  );
+}
+
+function CardSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <Skeleton className="h-6 w-32" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function UploadRow({ upload }: { upload: UploadRowData }) {
   const statusVariants: Record<string, "success" | "warning" | "neutral"> = {
     confirmed: "success",
     pending: "warning",
@@ -202,11 +238,23 @@ function UploadRow({ name, date, status, contracts }: { name: string; date: stri
           <span className="text-primary">📄</span>
         </div>
         <div>
-          <p className="font-medium text-text-primary">{name}</p>
-          <p className="text-sm text-text-secondary">{date} • {contracts} contracts</p>
+          <p className="font-medium text-text-primary">{upload.file_name}</p>
+          <p className="text-sm text-text-secondary">{upload.date} • {upload.contracts} contracts</p>
         </div>
       </div>
-      <Badge variant={statusVariants[status] || "neutral"}>{status}</Badge>
+      <Badge variant={statusVariants[upload.status] || "neutral"}>
+        {upload.status}
+      </Badge>
     </div>
   );
+}
+
+function formatDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatDateTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }

@@ -19,7 +19,7 @@ export function RegionComparisonChart({ data, className }: RegionComparisonChart
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} layout="vertical" margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" vertical={false} />
-            <XAxis type="number" tick={{ fill: "#6B7280", fontSize: 11 }} tickFormatter={(v) => `₹${(v/1e5).toFixed(1)}L`} />
+            <XAxis type="number" tick={{ fill: "#6B7280", fontSize: 11 }} tickFormatter={(v) => `Nu. ${(v/1e5).toFixed(1)}L`} />
             <YAxis
               dataKey="region"
               type="category"
@@ -37,7 +37,7 @@ export function RegionComparisonChart({ data, className }: RegionComparisonChart
               }}
               labelStyle={{ color: "#111827", fontWeight: 600 }}
               formatter={(value: number, name: string) => [
-                `₹${value.toLocaleString("en-IN")}`,
+                `Nu. ${value.toLocaleString("en-IN")}`,
                 name === "receivable" ? "Receivable" : name === "collected" ? "Collected" : "Overdue",
               ]}
             />

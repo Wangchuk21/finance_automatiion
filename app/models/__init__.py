@@ -112,6 +112,13 @@ class Contract(Base):
         CheckConstraint("gst >= 0", name="ck_gst_nonneg"),
     )
 
+    @property
+    def channel(self) -> str:
+        """Derived channel ('internal' or 'external')."""
+        from app.importer.column_map import derive_channel
+        ch, _ = derive_channel(self.payment_type)
+        return ch
+
     def __repr__(self) -> str:
         return f"<Contract(id={self.id}, reference='{self.reference}', state='{self.state}')>"
 
@@ -126,9 +133,11 @@ class Installment(Base):
         BigInteger, ForeignKey("contracts.id", ondelete="CASCADE"), nullable=False, index=True
     )
     due_month: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    due_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    due_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=True)
     received_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0"), nullable=False)
     salary_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
+    external_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
+    cell_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     status: Mapped[InstallmentStatus] = mapped_column(
         Enum(InstallmentStatus, native_enum=False),
         default=InstallmentStatus.PENDING,
@@ -154,7 +163,6 @@ class Installment(Base):
         UniqueConstraint("contract_id", "due_month", name="uq_installment_contract_month"),
         CheckConstraint("due_amount >= 0", name="ck_due_amount_nonneg"),
         CheckConstraint("received_amount >= 0", name="ck_received_amount_nonneg"),
-        CheckConstraint("received_amount <= due_amount", name="ck_received_not_exceed_due"),
         Index("ix_installments_contract_due", "contract_id", "due_month"),
     )
 
@@ -218,6 +226,16 @@ class Upload(Base):
         index=True,
     )
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON summary
+    
+    # M2: Additional fields for snapshot/comparison
+    previous_upload_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("uploads.id"), nullable=True
+    )
+    comparison_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON comparison results
+    missing_contracts_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    missing_share: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4), nullable=True)  # Share of missing contracts
+    wrong_file_warning: Mapped[bool] = mapped_column(default=False, nullable=False)
+    missing_share_threshold: Mapped[Decimal] = mapped_column(Numeric(5, 4), default=Decimal("0.10"), nullable=False)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -234,6 +252,9 @@ class Upload(Base):
     )
     closures: Mapped[list["ContractClosure"]] = relationship(
         "ContractClosure", back_populates="upload", lazy="dynamic"
+    )
+    previous_upload: Mapped[Optional["Upload"]] = relationship(
+        "Upload", remote_side=[id], foreign_keys=[previous_upload_id]
     )
 
     __table_args__ = (
@@ -368,6 +389,15 @@ class Notification(Base):
         return f"<Notification(id={self.id}, recipient={self.recipient_id}, status={self.status})>"
 
 
+import enum
+
+class UserRole(str, enum.Enum):
+    SUPER_ADMIN = "super_admin"
+    ADMIN = "admin"
+    UPLOADER = "uploader"
+    VIEWER = "viewer"
+
+
 class User(Base):
     """System users."""
 
@@ -380,7 +410,16 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(default=False, nullable=False)
-    role: Mapped[str] = mapped_column(String(50), default="viewer", nullable=False)
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, native_enum=False), default=UserRole.VIEWER, nullable=False
+    )
+
+    # TOTP fields
+    totp_secret: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    totp_recovery_codes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
+    totp_failed_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    totp_locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

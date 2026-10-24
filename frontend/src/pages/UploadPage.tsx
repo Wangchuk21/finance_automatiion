@@ -6,7 +6,7 @@ import { FileText, Upload, X, CheckCircle, AlertCircle, Loader2, ChevronRight, E
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Stepper, StepperStep } from "@/components/ui/stepper";
+import { Stepper, type StepperStep } from "@/components/ui/stepper";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -87,7 +87,7 @@ export function UploadPage() {
       formData.append("file", file);
       formData.append("as_of_date", asOfDate);
 
-      const response = await fetch("/api/uploads", {
+      const response = await fetch("/api/v1/uploads", {
         method: "POST",
         body: formData,
       });
@@ -110,7 +110,7 @@ export function UploadPage() {
     if (!preview) return;
     setIsConfirming(true);
     try {
-      const response = await fetch(`/api/uploads/${preview.id}/confirm`, {
+      const response = await fetch(`/api/v1/uploads/${preview.id}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ totp_code: totpCode }),
@@ -358,13 +358,13 @@ function PreviewStep({ preview, onNext, onBack }: any) {
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-success">₹{formatNumber(preview.monthly_breakdown)}</p>
+            <p className="text-2xl font-bold text-success">Nu. {formatNumber(preview.monthly_breakdown)}</p>
             <p className="text-sm text-text-secondary">Total Due</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-warning">₹{formatNumber(preview.monthly_breakdown)}</p>
+            <p className="text-2xl font-bold text-warning">Nu. {formatNumber(preview.monthly_breakdown)}</p>
             <p className="text-sm text-text-secondary">Total Received</p>
           </CardContent>
         </Card>
@@ -389,9 +389,9 @@ function PreviewStep({ preview, onNext, onBack }: any) {
                 {Object.entries(preview.monthly_breakdown).map(([month, data]) => (
                   <tr key={month} className="border-b border-border/50 hover:bg-neutral-light/50">
                     <td className="p-3 font-medium">{month}</td>
-                    <td className="p-3 text-right tabular-nums">₹{formatNumber(data.due)}</td>
-                    <td className="p-3 text-right tabular-nums">₹{formatNumber(data.received)}</td>
-                    <td className="p-3 text-right tabular-nums text-critical">₹{formatNumber(data.due - data.received)}</td>
+                    <td className="p-3 text-right tabular-nums">Nu. {formatNumber(data.due)}</td>
+                    <td className="p-3 text-right tabular-nums">Nu. {formatNumber(data.received)}</td>
+                    <td className="p-3 text-right tabular-nums text-critical">Nu. {formatNumber(data.due - data.received)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -6,7 +6,16 @@ from datetime import date
 from decimal import Decimal
 import re
 
-from app.importer.column_map import parse_amount, parse_date, clean_cid, clean_mobile
+from app.importer.column_map import (
+    parse_amount,
+    parse_date,
+    clean_cid,
+    clean_customer,
+    clean_mobile,
+    derive_channel,
+    validate_consecutive_months,
+    normalize_column_name,
+)
 
 
 @dataclass
@@ -74,7 +83,10 @@ class ValidationReport:
                 }
                 for i in self.issues
             ],
-            "stats": self.stats,
+            "stats": {
+                k: (str(v) if isinstance(v, Decimal) else v)
+                for k, v in self.stats.items()
+            },
         }
 
 
@@ -101,6 +113,23 @@ def validate_excel_import(
     if not rows:
         report.add_error("empty_file", "No data rows found in the sheet")
         return report
+
+    # Validate consecutive months across month headers
+    if month_column_map:
+        ordered_months = []
+        for orig_col, (col_type, m, y) in month_column_map.items():
+            if col_type in ("external", "salary"):
+                if not ordered_months or ordered_months[-1] != (y, m):
+                    ordered_months.append((y, m))
+
+        if not ordered_months:
+            for orig_col, (_, m, y) in month_column_map.items():
+                if not ordered_months or ordered_months[-1] != (y, m):
+                    ordered_months.append((y, m))
+
+        is_consec, err_msg = validate_consecutive_months(ordered_months)
+        if not is_consec:
+            report.add_error("non_consecutive_months", err_msg)
     
     # Build reverse mapping from canonical to original column names
     canonical_to_original = {}
@@ -144,6 +173,11 @@ def validate_excel_import(
             else:
                 seen_references[ref] = [row_num]
         
+        # Validate Customer (ensuring it stays text)
+        customer_col = get_orig_col("customer")
+        customer_raw = row.get(customer_col)
+        customer = clean_customer(customer_raw)
+
         # Validate CID
         cid_col = get_orig_col("cid")
         cid_raw = row.get(cid_col)
@@ -153,15 +187,25 @@ def validate_excel_import(
                 seen_cids[cid].append(row_num)
             else:
                 seen_cids[cid] = [row_num]
+
+        # Validate Payment Type & Channel derivation
+        pt_col = get_orig_col("payment_type")
+        pt_raw = row.get(pt_col)
+        channel, ch_warnings = derive_channel(pt_raw, row, month_column_map)
+        for warn in ch_warnings:
+            report.add_warning("channel_inference", warn, row=row_num, column=pt_col, value=pt_raw)
         
         # Validate mobile
         mobile_col = get_orig_col("mobile")
-        mobile_raw = row.get(mobile_col)
-        mobile, is_valid = clean_mobile(mobile_raw)
-        if mobile_raw is not None and str(mobile_raw).strip() == "":
-            report.add_warning("blank_mobile", "Mobile number is blank", row=row_num, column=mobile_col)
-        elif mobile and not is_valid:
-            report.add_warning("invalid_mobile", f"Invalid mobile format: '{mobile_raw}'", row=row_num, column=mobile_col, value=mobile_raw)
+        has_mobile_col = ("mobile" in canonical_to_original) or (mobile_col in row)
+        if has_mobile_col:
+            mobile_raw = row.get(mobile_col)
+            if mobile_raw is None or str(mobile_raw).strip() == "":
+                report.add_warning("blank_mobile", "Mobile number is blank", row=row_num, column=mobile_col)
+            else:
+                mobile, is_valid = clean_mobile(mobile_raw)
+                if not is_valid:
+                    report.add_warning("invalid_mobile", "Invalid mobile format", row=row_num, column=mobile_col)
         
         # Validate dates
         contract_date_col = get_orig_col("contract_date")
@@ -218,11 +262,11 @@ def validate_excel_import(
                 if parsed is not None:
                     key = (year, month)
                     if col_type == "external":
-                        month_data[key]["external"] = Decimal(str(parsed))
+                        month_data[key]["external"] = parsed
                     elif col_type == "salary":
-                        month_data[key]["salary"] = Decimal(str(parsed))
+                        month_data[key]["salary"] = parsed
                     elif col_type == "received":
-                        month_data[key]["received"] = Decimal(str(parsed))
+                        month_data[key]["received"] = parsed
         
         for (year, month), data in month_data.items():
             due = max(data["external"], data["salary"])
@@ -231,6 +275,80 @@ def validate_excel_import(
             total_collected += received
             if due > received:
                 total_overdue += (due - received)
+        
+        # (a) Check sum of all month cells (external + salary) vs sheet's "EMI Received"
+        total_month_cells = Decimal("0")
+        for orig_col, (col_type, month, year) in month_column_map.items():
+            if col_type in ("external", "salary"):
+                val = row.get(orig_col)
+                if val is not None:
+                    parsed_val = parse_amount(val)
+                    if parsed_val is not None:
+                        total_month_cells += parsed_val
+
+        emi_rec_col = get_orig_col("emi_received")
+        if emi_rec_col not in row:
+            for k in row.keys():
+                if normalize_column_name(k) in ("emi received", "emi_received", "total received"):
+                    emi_rec_col = k
+                    break
+
+        sheet_emi_received = None
+        if emi_rec_col in row:
+            emi_rec_raw = row.get(emi_rec_col)
+            if emi_rec_raw is not None and str(emi_rec_raw).strip() != "":
+                sheet_emi_received = parse_amount(emi_rec_raw)
+                if sheet_emi_received is not None:
+                    if abs(total_month_cells - sheet_emi_received) > Decimal("0.01"):
+                        ref_label = ref if ref else f"Row {row_num}"
+                        report.add_warning(
+                            "emi_received_mismatch",
+                            f"Contract {ref_label}: sum of month cells ({total_month_cells}) differs from EMI Received ({sheet_emi_received})",
+                            row=row_num,
+                            column=emi_rec_col,
+                        )
+
+        # (b) Sales Amt - (received - GST) differs from sheet's "Overall Outstanding" by more than 0.01
+        sales_amt_col = get_orig_col("sales_amount")
+        if sales_amt_col not in row:
+            for k in row.keys():
+                if normalize_column_name(k) in ("sales amount", "sales_amount", "amount", "sale amount", "sales amt"):
+                    sales_amt_col = k
+                    break
+        sales_amt = parse_amount(row.get(sales_amt_col)) if sales_amt_col in row else None
+
+        gst_col = get_orig_col("gst")
+        if gst_col not in row:
+            for k in row.keys():
+                if normalize_column_name(k) in ("gst", "tax", "gst amount"):
+                    gst_col = k
+                    break
+        gst_val = parse_amount(row.get(gst_col)) if gst_col in row else None
+        if gst_val is None:
+            gst_val = Decimal("0")
+
+        overall_out_col = get_orig_col("overall_outstanding")
+        if overall_out_col not in row:
+            for k in row.keys():
+                if normalize_column_name(k) in ("overall outstanding", "overall_outstanding", "balance due", "outstanding"):
+                    overall_out_col = k
+                    break
+
+        if overall_out_col in row and sales_amt is not None:
+            overall_out_raw = row.get(overall_out_col)
+            if overall_out_raw is not None and str(overall_out_raw).strip() != "":
+                sheet_overall_out = parse_amount(overall_out_raw)
+                if sheet_overall_out is not None:
+                    received_amt = sheet_emi_received if sheet_emi_received is not None else total_month_cells
+                    calc_outstanding = sales_amt - (received_amt - gst_val)
+                    if abs(calc_outstanding - sheet_overall_out) > Decimal("0.01"):
+                        ref_label = ref if ref else f"Row {row_num}"
+                        report.add_warning(
+                            "overall_outstanding_mismatch",
+                            f"Contract {ref_label}: calculated outstanding ({calc_outstanding}) differs from Overall Outstanding ({sheet_overall_out})",
+                            row=row_num,
+                            column=overall_out_col,
+                        )
     
     # Check for duplicate references
     for ref, row_nums in seen_references.items():
@@ -264,9 +382,9 @@ def validate_excel_import(
         "unique_references": len(seen_references),
         "duplicate_references": sum(1 for v in seen_references.values() if len(v) > 1),
         "unique_cids": len(seen_cids),
-        "total_receivable": float(total_receivable),
-        "total_collected": float(total_collected),
-        "total_overdue": float(total_overdue),
+        "total_receivable": total_receivable,
+        "total_collected": total_collected,
+        "total_overdue": total_overdue,
         "rows_with_errors": len(set(i.row for i in report.issues if i.severity == "error" and i.row)),
         "rows_with_warnings": len(set(i.row for i in report.issues if i.severity == "warning" and i.row)),
     }
@@ -320,9 +438,9 @@ def generate_preview_summary(rows: List[Dict[str, Any]], month_column_map: Dict[
                         elif col_type == "received":
                             stats["monthly_breakdown"][key]["received"] += Decimal(str(parsed))
     
-    # Convert Decimal to float for JSON
+    # Convert Decimal to Decimal-safe string for JSON
     for key in stats["monthly_breakdown"]:
-        stats["monthly_breakdown"][key]["due"] = float(stats["monthly_breakdown"][key]["due"])
-        stats["monthly_breakdown"][key]["received"] = float(stats["monthly_breakdown"][key]["received"])
+        stats["monthly_breakdown"][key]["due"] = str(stats["monthly_breakdown"][key]["due"])
+        stats["monthly_breakdown"][key]["received"] = str(stats["monthly_breakdown"][key]["received"])
     
     return stats

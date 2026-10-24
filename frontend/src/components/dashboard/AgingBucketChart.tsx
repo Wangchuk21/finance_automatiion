@@ -17,7 +17,7 @@ export function AgingBucketChart({ data, className }: AgingBucketChartProps) {
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} layout="vertical" margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" vertical={false} />
-            <XAxis type="number" tick={{ fill: "#6B7280", fontSize: 11 }} tickFormatter={(v) => `₹${(v/1e5).toFixed(1)}L`} />
+            <XAxis type="number" tick={{ fill: "#6B7280", fontSize: 11 }} tickFormatter={(v) => `Nu. ${(v/1e5).toFixed(1)}L`} />
             <YAxis
               dataKey="bucket"
               type="category"
@@ -33,7 +33,7 @@ export function AgingBucketChart({ data, className }: AgingBucketChartProps) {
                 borderRadius: "8px",
                 boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
               }}
-              formatter={(value: number) => [`₹${value.toLocaleString("en-IN")}`, "Amount"]}
+              formatter={(value: number) => [`Nu. ${value.toLocaleString("en-IN")}`, "Amount"]}
             />
             <Legend />
             <Bar dataKey="amount" name="Amount" fill="#1F4FD8" radius={[0, 4, 4, 0]} maxBarSize={32}>

@@ -2,9 +2,10 @@
 
 import hashlib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
+import re
 
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -12,11 +13,16 @@ from openpyxl.utils import get_column_letter
 from app.importer.column_map import (
     parse_month_column,
     get_canonical_column,
+    map_sheet_columns,
     parse_amount,
+    parse_int,
     parse_date,
     clean_cid,
+    clean_customer,
     clean_mobile,
+    derive_channel,
     reshape_month_columns,
+    calculate_installment_due,
 )
 from app.importer.validation import ValidationReport, validate_excel_import
 
@@ -30,7 +36,7 @@ class ParsedSheet:
     month_columns: Dict[str, Tuple[str, int, int]]  # original_name -> (type, month, year)
     static_columns: Dict[str, str]  # original_name -> canonical_name
     totals_row: Optional[int] = None
-    sheet_totals: Dict[str, float] = None
+    sheet_totals: Dict[str, Decimal] = None
 
 
 def detect_header_row(worksheet, max_rows: int = 10) -> int:
@@ -81,58 +87,67 @@ def read_excel_sheet(
             header_row = detect_header_row(ws)
         
         # Read headers
+        header_cells = list(ws.iter_rows(min_row=header_row, max_row=header_row))[0]
         headers = []
-        for col_idx in range(1, ws.max_column + 1):
-            cell = ws.cell(row=header_row, column=col_idx)
-            header = str(cell.value).strip() if cell.value else f"col_{col_idx}"
+        for cell in header_cells:
+            val = cell.value if hasattr(cell, "value") else cell
+            if val is not None:
+                if isinstance(val, (datetime, date)):
+                    header = val.strftime("%b-%y")
+                else:
+                    header = str(val).strip()
+            else:
+                header = f"col_{len(headers) + 1}"
             headers.append(header)
         
-        # Map columns
-        month_columns = {}
-        static_columns = {}
-        
-        for col_idx, header in enumerate(headers):
-            # Try to parse as month column
-            month_info = parse_month_column(header)
-            if month_info:
-                month_columns[header] = month_info
-            else:
-                # Try to map to canonical static column
-                canonical = get_canonical_column(header)
-                if canonical:
-                    static_columns[header] = canonical
+        # Map columns using adjacency pairing
+        month_columns, static_columns = map_sheet_columns(headers)
         
         # Read data rows
         rows = []
         sheet_totals = {}
         totals_row = None
         
-        for row_idx in range(header_row + 1, ws.max_row + 1):
+        for row_tuple in ws.iter_rows(min_row=header_row + 1):
             row_data = {}
             is_empty = True
             
             for col_idx, header in enumerate(headers):
-                cell = ws.cell(row=row_idx, column=col_idx + 1)
-                value = cell.value
-                if value is not None and str(value).strip():
+                cell = row_tuple[col_idx] if col_idx < len(row_tuple) else None
+                if cell is None:
+                    row_data[header] = None
+                    continue
+                
+                val = cell.value if hasattr(cell, "value") else cell
+                fmt = getattr(cell, "number_format", None)
+                
+                if val is not None and str(val).strip():
                     is_empty = False
-                row_data[header] = value
+                
+                # Check for zero-padded numeric formatting (e.g. "0000" on 249 -> "0249")
+                if fmt and isinstance(val, (int, float)) and not isinstance(val, bool) and re.match(r"^0+$", str(fmt).strip("\"'")):
+                    width = len(str(fmt).strip("\"'"))
+                    if width > 1:
+                        if isinstance(val, int):
+                            val = f"{val:0{width}d}"
+                        elif isinstance(val, float) and val.is_integer():
+                            val = f"{int(val):0{width}d}"
+                
+                row_data[header] = val
             
             if is_empty:
-                # Check if this might be a totals row
-                first_col = str(row_data.get(headers[0], "")).strip().lower() if headers else ""
-                if any(kw in first_col for kw in ["total", "sum", "grand total", "subtotal"]):
-                    totals_row = row_idx
-                    # Parse totals
-                    for col_idx, header in enumerate(headers):
-                        cell = ws.cell(row=row_idx, column=col_idx + 1)
-                        if cell.value is not None:
-                            parsed = parse_amount(cell.value)
-                            if parsed is not None:
-                                sheet_totals[header] = parsed
-                    continue
-                # Skip completely empty rows
                 continue
+            
+            # Check if this might be a totals row
+            first_col = str(row_data.get(headers[0], "")).strip().lower() if headers else ""
+            if any(kw in first_col for kw in ["total", "sum", "grand total", "subtotal"]):
+                totals_row = True
+                for header in headers:
+                    val = row_data.get(header)
+                    if val is not None:
+                        parsed = parse_amount(val)
+                        if parsed is not None:
+                            sheet_totals[header] = parsed
             
             rows.append(row_data)
         
@@ -175,12 +190,18 @@ def parse_sheet_to_contracts(parsed: ParsedSheet) -> List[Dict[str, Any]]:
             
             if canonical == "cid":
                 contract[canonical] = clean_cid(value)
+            elif canonical == "customer":
+                contract[canonical] = clean_customer(value)
             elif canonical == "mobile":
                 mobile, _ = clean_mobile(value)
                 contract[canonical] = mobile
             elif canonical in ("contract_date",):
                 contract[canonical] = parse_date(value)
-            elif canonical in ("monthly_deduction", "sales_amount", "gst", "emi_months"):
+            elif canonical in ("emi_months", "count", "months"):
+                parsed_val = parse_int(value)
+                if parsed_val is not None:
+                    contract[canonical] = parsed_val
+            elif canonical in ("monthly_deduction", "sales_amount", "gst", "emi_received", "overall_outstanding"):
                 parsed_val = parse_amount(value)
                 if parsed_val is not None:
                     contract[canonical] = parsed_val
@@ -189,9 +210,17 @@ def parse_sheet_to_contracts(parsed: ParsedSheet) -> List[Dict[str, Any]]:
         
         # Reshape monthly columns
         installments = reshape_month_columns(row, parsed.month_columns)
+        monthly_ded = contract.get("monthly_deduction")
+        gst_amt = contract.get("gst")
+        for idx, inst in enumerate(installments):
+            inst["due_amount"] = calculate_installment_due(monthly_ded, gst_amt, idx)
         
         if not contract.get("reference"):
             continue  # Skip rows without reference
+        
+        # Derive channel
+        channel, _ = derive_channel(contract.get("payment_type"), row, parsed.month_columns)
+        contract["channel"] = channel
         
         contract["installments"] = installments
         contracts.append(contract)

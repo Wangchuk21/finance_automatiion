@@ -30,7 +30,7 @@ export function CollectionTrendChart({ data, className }: CollectionTrendChartPr
           <LineChart data={data} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
             <XAxis dataKey="month" tick={{ fill: "#6B7280", fontSize: 11 }} axisLine={{ stroke: "#E5E7EB" }} />
-            <YAxis tick={{ fill: "#6B7280", fontSize: 11 }} tickFormatter={(v) => `₹${(v/1e5).toFixed(1)}L`} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: "#6B7280", fontSize: 11 }} tickFormatter={(v) => `Nu. ${(v/1e5).toFixed(1)}L`} axisLine={false} tickLine={false} />
             <Tooltip
               contentStyle={{
                 backgroundColor: "#FFFFFF",
@@ -40,7 +40,7 @@ export function CollectionTrendChart({ data, className }: CollectionTrendChartPr
               }}
               labelStyle={{ color: "#111827", fontWeight: 600 }}
               formatter={(value: number, name: string) => [
-                `₹${value.toLocaleString("en-IN")}`,
+                `Nu. ${value.toLocaleString("en-IN")}`,
                 name === "internal" ? "Internal" : name === "external" ? "External" : "Total",
               ]}
             />

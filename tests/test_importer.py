@@ -4,7 +4,7 @@ import pytest
 import sys
 from pathlib import Path
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -16,12 +16,19 @@ from app.importer.column_map import (
     parse_amount,
     parse_date,
     clean_cid,
+    clean_customer,
     clean_mobile,
+    format_text_cell,
     normalize_status_value,
     reshape_month_columns,
+    derive_channel,
+    pair_adjacent_month_columns,
+    map_sheet_columns,
+    validate_consecutive_months,
+    calculate_installment_due,
 )
 from app.importer.validation import validate_excel_import, ValidationReport
-from app.importer.reader import read_excel_sheet, parse_sheet_to_contracts, import_excel_file
+from app.importer.reader import read_excel_sheet, parse_sheet_to_contracts, import_excel_file, ParsedSheet
 
 
 class TestColumnMap:
@@ -79,6 +86,7 @@ class TestColumnMap:
         assert parse_amount(1000) == 1000.0
         assert parse_amount("1,000.50") == 1000.50
         assert parse_amount("₹1,22,640") == 122640.0
+        assert parse_amount("Nu. 1,22,640") == 122640.0
         assert parse_amount("(500)") == -500.0
         assert parse_amount("-1,000") == -1000.0
         assert parse_amount("") is None
@@ -267,6 +275,716 @@ class TestReader:
         assert report.error_count == 5
         # Should still parse valid rows
         assert len(contracts) == 6  # 7 rows - 1 missing ref
+
+
+class TestChannelFromPaymentType:
+    """Tests for Channel derivation from Payment Type."""
+
+    def test_internal_keywords(self):
+        # words employee, staff, salary => internal
+        for pt in [
+            "Employee Installment",
+            "employee",
+            "Staff Loan",
+            "staff deduction",
+            "Salary Deduction",
+            "salary mode",
+        ]:
+            channel, warnings = derive_channel(pt)
+            assert channel == "internal"
+            assert len(warnings) == 0
+
+    def test_external_keywords(self):
+        # words external, customer => external
+        for pt in [
+            "External Installment",
+            "external payment",
+            "Customer Direct",
+            "customer installment",
+            "External",
+        ]:
+            channel, warnings = derive_channel(pt)
+            assert channel == "external"
+            assert len(warnings) == 0
+
+    def test_emi_not_automatically_internal(self):
+        # "EMI" does not map to internal; without data it is unknown + warning
+        channel, warnings = derive_channel("EMI")
+        assert channel == "unknown"
+        assert len(warnings) == 1
+        assert "Payment type 'EMI' is unknown" in warnings[0]
+
+        # Same for "EMI Installment"
+        channel2, warnings2 = derive_channel("EMI Installment")
+        assert channel2 == "unknown"
+        assert len(warnings2) == 1
+
+    def test_emi_inferred_from_salary_data(self):
+        # "EMI" with salary data in row => inferred internal + warning
+        row_salary = {"Salary Sep 24": 5000, "External Sep 24": 0}
+        channel, warnings = derive_channel("EMI", data=row_salary)
+        assert channel == "internal"
+        assert len(warnings) == 1
+        assert "inferred channel 'internal' from data" in warnings[0]
+
+        # With installments list
+        inst_salary = [{"salary_amount": 3500, "external_amount": None}]
+        channel_inst, warnings_inst = derive_channel("EMI", data=inst_salary)
+        assert channel_inst == "internal"
+        assert len(warnings_inst) == 1
+
+    def test_emi_inferred_from_external_data(self):
+        # "EMI" with external data in row => inferred external + warning
+        row_external = {"Salary Sep 24": 0, "External Sep 24": 5000}
+        channel, warnings = derive_channel("EMI", data=row_external)
+        assert channel == "external"
+        assert len(warnings) == 1
+        assert "inferred channel 'external' from data" in warnings[0]
+
+    def test_unknown_payment_type_inferred_from_data(self):
+        # Unrecognized payment type => infer from data + warning
+        row_salary = {"Salary Feb 25": 1870}
+        channel, warnings = derive_channel("Direct Transfer", data=row_salary)
+        assert channel == "internal"
+        assert len(warnings) == 1
+
+        # Blank/None payment type
+        channel_blank, warnings_blank = derive_channel("", data=row_salary)
+        assert channel_blank == "internal"
+        assert len(warnings_blank) == 1
+
+        channel_none, warnings_none = derive_channel(None, data={"External Feb 25": 1870})
+        assert channel_none == "external"
+        assert len(warnings_none) == 1
+
+    def test_unknown_payment_type_without_data(self):
+        channel, warnings = derive_channel("Random Mode", data=None)
+        assert channel == "unknown"
+        assert len(warnings) == 1
+
+
+class TestAdjacencyMonthSalaryPairing:
+    """Tests for pairing each month column with the Salary column right next to it."""
+
+    def test_pair_month_and_salary_adjacent(self):
+        # Tests "Salary Feb2", "Salary Sep 27", "Salary March" adjacent to base month columns
+        headers = [
+            "Reference",
+            "Feb-26",
+            "Salary Feb2",
+            "Mar-26",
+            "Salary March",
+            "Sep-26",
+            "Salary Sep 27",
+        ]
+        month_columns = pair_adjacent_month_columns(headers)
+
+        assert month_columns["Feb-26"] == ("external", 2, 2026)
+        assert month_columns["Salary Feb2"] == ("salary", 2, 2026)
+
+        assert month_columns["Mar-26"] == ("external", 3, 2026)
+        assert month_columns["Salary March"] == ("salary", 3, 2026)
+
+        assert month_columns["Sep-26"] == ("external", 9, 2026)
+        assert month_columns["Salary Sep 27"] == ("salary", 9, 2026)
+
+    def test_parse_month_column_paired_with(self):
+        # Direct parsing with paired_with=(month, year) context
+        assert parse_month_column("Salary Feb2", paired_with=(2, 2026)) == ("salary", 2, 2026)
+        assert parse_month_column("Salary Sep 27", paired_with=(9, 2026)) == ("salary", 9, 2026)
+        assert parse_month_column("Salary March", paired_with=(3, 2026)) == ("salary", 3, 2026)
+
+    def test_map_sheet_columns_pairs_correctly(self):
+        headers = [
+            "Customer",
+            "CID",
+            "External Sep 24",
+            "Salary Sep 24",
+            "External Oct 24",
+            "Salary Oct 24",
+        ]
+        month_columns, static_columns = map_sheet_columns(headers)
+
+        assert static_columns["Customer"] == "customer"
+        assert static_columns["CID"] == "cid"
+        assert month_columns["External Sep 24"] == ("external", 9, 2024)
+        assert month_columns["Salary Sep 24"] == ("salary", 9, 2024)
+        assert month_columns["External Oct 24"] == ("external", 10, 2024)
+        assert month_columns["Salary Oct 24"] == ("salary", 10, 2024)
+
+
+class TestMonthHeaderParsingAndConsecutive:
+    """Tests for month headers text/date cell parsing and consecutive validation."""
+
+    def test_text_month_headers(self):
+        assert parse_month_column("Feb-25") == ("external", 2, 2025)
+        assert parse_month_column("Feb 25") == ("external", 2, 2025)
+        assert parse_month_column("Feb-2025") == ("external", 2, 2025)
+        assert parse_month_column("February-25") == ("external", 2, 2025)
+        assert parse_month_column("02-25") == ("external", 2, 2025)
+        assert parse_month_column("02/25") == ("external", 2, 2025)
+        assert parse_month_column("02-2025") == ("external", 2, 2025)
+        assert parse_month_column("2025-02") == ("external", 2, 2025)
+
+    def test_excel_date_cells(self):
+        dt_val = datetime(2025, 2, 1, 0, 0)
+        assert parse_month_column(dt_val) == ("external", 2, 2025)
+
+        date_val = date(2025, 2, 1)
+        assert parse_month_column(date_val) == ("external", 2, 2025)
+
+        assert parse_month_column("2025-02-01 00:00:00") == ("external", 2, 2025)
+        assert parse_month_column("2025-02-01") == ("external", 2, 2025)
+
+    def test_consecutive_months_validator(self):
+        # Consecutive sequence
+        is_valid, err = validate_consecutive_months([(2025, 2), (2025, 3), (2025, 4)])
+        assert is_valid is True
+        assert err is None
+
+        # Across year boundary
+        is_valid, err = validate_consecutive_months([(2024, 11), (2024, 12), (2025, 1), (2025, 2)])
+        assert is_valid is True
+        assert err is None
+
+        # Gap between Feb and Apr (missing March)
+        is_valid, err = validate_consecutive_months([(2025, 2), (2025, 4)])
+        assert is_valid is False
+        assert "Month columns are not consecutive" in err
+        assert "02/2025 is followed by 04/2025 instead of 03/2025" in err
+
+        # Out of order
+        is_valid, err = validate_consecutive_months([(2025, 3), (2025, 2)])
+        assert is_valid is False
+        assert "Month columns are not consecutive" in err
+
+    def test_validation_report_catches_non_consecutive_months(self):
+        rows = [{"Reference": "REF-001", "Feb-25": 1000, "Apr-25": 1000}]
+        month_map = {
+            "Feb-25": ("external", 2, 2025),
+            "Apr-25": ("external", 4, 2025),
+        }
+        static_cols = {"Reference": "reference"}
+
+        report = validate_excel_import(rows, month_map, static_cols)
+        assert report.has_errors
+        assert any(i.code == "non_consecutive_months" for i in report.issues)
+
+
+class TestCustomerAndCIDZeroPaddedText:
+    """Tests for Customer and CID staying text, and zero-padded format returning '0249'."""
+
+    def test_clean_cid_preserves_text_and_zero_padded(self):
+        assert clean_cid("0249") == "0249"
+        assert clean_cid(249, number_format="0000") == "0249"
+        assert clean_cid(249, number_format="00000") == "00249"
+        assert clean_cid("12345.0") == "12345"
+        assert clean_cid(12345.0) == "12345"
+        assert clean_cid(11508003636) == "11508003636"
+        assert clean_cid(None) == ""
+
+    def test_clean_customer_preserves_text_and_zero_padded(self):
+        assert clean_customer("0249") == "0249"
+        assert clean_customer(249, number_format="0000") == "0249"
+        assert clean_customer(249, number_format="00000") == "00249"
+        assert clean_customer("Yeshi Wangmo") == "Yeshi Wangmo"
+        assert clean_customer(12345) == "12345"
+        assert clean_customer(None) == ""
+
+    def test_format_text_cell_with_cell_object(self):
+        class MockCell:
+            def __init__(self, value, number_format):
+                self.value = value
+                self.number_format = number_format
+
+        cell = MockCell(249, "0000")
+        assert format_text_cell(cell) == "0249"
+        assert clean_cid(cell) == "0249"
+        assert clean_customer(cell) == "0249"
+
+    def test_excel_import_zero_padded_numeric_cells(self, tmp_path):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "EMI Data"
+
+        # Headers
+        ws.append(["Reference", "Customer", "CID", "Feb-25", "Salary Feb"])
+
+        # Row 2: Customer and CID as numbers with zero-padded format "0000"
+        ws.append(["REF-PAD", 249, 249, 1000, 1000])
+        # Apply number formats
+        ws["B2"].number_format = "0000"
+        ws["C2"].number_format = "0000"
+
+        file_path = str(tmp_path / "test_padded.xlsx")
+        wb.save(file_path)
+
+        parsed = read_excel_sheet(file_path)
+        assert parsed.rows[0]["Customer"] == "0249"
+        assert parsed.rows[0]["CID"] == "0249"
+
+        contracts = parse_sheet_to_contracts(parsed)
+        assert len(contracts) == 1
+        assert contracts[0]["customer"] == "0249"
+        assert contracts[0]["cid"] == "0249"
+        assert isinstance(contracts[0]["customer"], str)
+        assert isinstance(contracts[0]["cid"], str)
+
+
+class TestMonthCellStatusValues:
+    """Tests for 'Not Received' and 'Not Deducted' in month cells becoming status with empty amount and no error."""
+
+    def test_not_received_in_month_cell_becomes_status_amount_empty(self):
+        row = {
+            "External Sep 24": 5000,
+            "Received Sep 24": "Not Received",
+        }
+        month_map = {
+            "External Sep 24": ("external", 9, 2024),
+            "Received Sep 24": ("received", 9, 2024),
+        }
+        res = reshape_month_columns(row, month_map)
+
+        assert len(res) == 1
+        assert res[0]["not_status"] == "not_received"
+        assert res[0]["status"] == "not_received"
+        assert res[0]["received_amount"] is None  # amount empty
+        assert res[0]["external_amount"] == 5000.0
+
+    def test_not_deducted_in_month_cell_becomes_status_amount_empty(self):
+        row = {
+            "Salary Sep 24": "Not Deducted",
+        }
+        month_map = {
+            "Salary Sep 24": ("salary", 9, 2024),
+        }
+        res = reshape_month_columns(row, month_map)
+
+        assert len(res) == 1
+        assert res[0]["not_status"] == "not_deducted"
+        assert res[0]["status"] == "not_deducted"
+        assert res[0]["salary_amount"] is None  # amount empty
+
+    def test_not_received_and_not_deducted_not_an_error_in_validation(self):
+        rows = [
+            {
+                "Reference": "REF-001",
+                "Payment Type": "External Installment",
+                "External Sep 24": 5000,
+                "Received Sep 24": "Not Received",
+                "Salary Sep 24": "Not Deducted",
+            }
+        ]
+        month_map = {
+            "External Sep 24": ("external", 9, 2024),
+            "Salary Sep 24": ("salary", 9, 2024),
+            "Received Sep 24": ("received", 9, 2024),
+        }
+        static_cols = {"Reference": "reference", "Payment Type": "payment_type"}
+
+        report = validate_excel_import(rows, month_map, static_cols)
+        assert not report.has_errors
+        assert report.error_count == 0
+        assert report.warning_count == 0
+
+    def test_full_pipeline_month_cell_status(self, tmp_path):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "EMI Data"
+
+        ws.append(["Reference", "Payment Type", "Feb-25", "Salary Feb", "Received Feb 25"])
+        ws.append(["REF-STAT", "External Installment", 1870, "Not Deducted", "Not Received"])
+
+        file_path = str(tmp_path / "test_status.xlsx")
+        wb.save(file_path)
+
+        contracts, report, preview = import_excel_file(file_path)
+        assert not report.has_errors
+        assert len(contracts) == 1
+
+        inst = contracts[0]["installments"][0]
+        assert inst["due_month"] == date(2025, 2, 1)
+        assert inst["external_amount"] == 1870.0
+        assert inst["salary_amount"] is None  # amount empty, not an error
+        assert inst["received_amount"] is None  # amount empty, not an error
+        assert inst["not_status"] in ("not_received", "not_deducted")
+        assert inst["status"] in ("not_received", "not_deducted")
+
+    def test_formatted_amount_parsing_in_month_cells_and_static_cols(self):
+        from app.importer.reader import ParsedSheet
+        row = {
+            "Reference": "REF-AMT",
+            "Sales Amount": "1,22,640",
+            "Monthly Deduction": "5,110.00",
+            "Feb-25": "1,22,640",
+            "Salary Feb": "5,110.00",
+        }
+        month_map = {
+            "Feb-25": ("external", 2, 2025),
+            "Salary Feb": ("salary", 2, 2025),
+        }
+        static_cols = {
+            "Reference": "reference",
+            "Sales Amount": "sales_amount",
+            "Monthly Deduction": "monthly_deduction",
+        }
+        parsed = ParsedSheet(
+            sheet_name="Test",
+            headers=list(row.keys()),
+            rows=[row],
+            month_columns=month_map,
+            static_columns=static_cols,
+        )
+        contracts = parse_sheet_to_contracts(parsed)
+        assert contracts[0]["sales_amount"] == 122640.0
+        assert contracts[0]["monthly_deduction"] == 5110.00
+        assert contracts[0]["installments"][0]["external_amount"] == 122640.0
+        assert contracts[0]["installments"][0]["salary_amount"] == 5110.00
+
+
+class TestDecimalPrecisionAndTotals:
+    """Test money is Decimal, sums are exact, and 3-row file total equals expected amount."""
+
+    def test_decimal_precision_and_three_row_file_totals(self, tmp_path):
+        # 1. Sum of 0.1 ten times is exact Decimal
+        ten_parts = [parse_amount(0.1) for _ in range(10)]
+        assert all(isinstance(v, Decimal) for v in ten_parts)
+        sum_ten = sum(ten_parts)
+        assert sum_ten == Decimal("1.00")
+        assert isinstance(sum_ten, Decimal)
+
+        # 2. Sum of 7201.20 + 13701.20 + 6500.00 is exact Decimal
+        amt1 = parse_amount(7201.20)
+        amt2 = parse_amount(13701.20)
+        amt3 = parse_amount(6500.00)
+        assert all(isinstance(v, Decimal) for v in (amt1, amt2, amt3))
+        three_sum = amt1 + amt2 + amt3
+        assert three_sum == Decimal("27402.40")
+        assert isinstance(three_sum, Decimal)
+
+        # 3. 3-row file's total equals the exact expected amount
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+
+        ws.append(["Reference", "Sales Amount", "Salary Feb", "Feb-25"])
+        ws.append(["R1", 7201.20, 7201.20, None])
+        ws.append(["R2", 13701.20, 13701.20, None])
+        ws.append(["R3", 6500.00, 6500.00, None])
+
+        file_path = str(tmp_path / "three_rows.xlsx")
+        wb.save(file_path)
+
+        parsed = read_excel_sheet(file_path)
+        report = validate_excel_import(parsed.rows, parsed.month_columns, parsed.static_columns)
+        assert report.stats["total_receivable"] == Decimal("27402.40")
+        assert isinstance(report.stats["total_receivable"], Decimal)
+
+        contracts = parse_sheet_to_contracts(parsed)
+        sales_total = sum((c["sales_amount"] for c in contracts), Decimal("0"))
+        assert sales_total == Decimal("27402.40")
+        assert isinstance(sales_total, Decimal)
+
+
+class TestMobileValidationWarnings:
+    """Tests for blank and invalid mobile numbers producing warnings without errors or sensitive data."""
+
+    def test_blank_and_invalid_mobile_give_warning_without_number_in_message(self):
+        rows = [
+            {"Reference": "REF-01", "Mobile": "", "Payment Type": "Salary"},
+            {"Reference": "REF-02", "Mobile": None, "Payment Type": "Salary"},
+            {"Reference": "REF-03", "Mobile": "12345", "Payment Type": "Salary"},
+        ]
+        month_map = {}
+        static_cols = {"Reference": "reference", "Mobile": "mobile", "Payment Type": "payment_type"}
+
+        report = validate_excel_import(rows, month_map, static_cols)
+
+        # Must give WARNING only, no errors
+        assert not report.has_errors
+        assert report.has_warnings
+        assert report.error_count == 0
+        assert report.warning_count == 3
+
+        blank_warnings = report.get_warnings_by_code("blank_mobile")
+        assert len(blank_warnings) == 2
+        assert all(w.severity == "warning" for w in blank_warnings)
+
+        invalid_warnings = report.get_warnings_by_code("invalid_mobile")
+        assert len(invalid_warnings) == 1
+        assert invalid_warnings[0].severity == "warning"
+        # Message must not contain the number
+        assert "12345" not in invalid_warnings[0].message
+        assert invalid_warnings[0].message == "Invalid mobile format"
+
+
+class TestReconciliationAndDueAmount:
+    """Tests for EMI reconciliation warnings and installment due calculation."""
+
+    def test_warning_month_cells_differs_from_emi_received(self):
+        # (a) sum of month cells (5000 + 5000 = 10000) differs from EMI Received (8000) by > 0.01
+        rows = [
+            {
+                "Reference": "REF-A1",
+                "Payment Type": "Salary",
+                "Salary Feb": 5000,
+                "Salary Mar": 5000,
+                "EMI Received": 8000,
+            }
+        ]
+        month_map = {
+            "Salary Feb": ("salary", 2, 2025),
+            "Salary Mar": ("salary", 3, 2025),
+        }
+        static_cols = {
+            "Reference": "reference",
+            "Payment Type": "payment_type",
+            "EMI Received": "emi_received",
+        }
+
+        report = validate_excel_import(rows, month_map, static_cols)
+
+        assert not report.has_errors
+        assert report.has_warnings
+        warnings = report.get_warnings_by_code("emi_received_mismatch")
+        assert len(warnings) == 1
+        assert warnings[0].severity == "warning"
+        # Message includes Reference and the two amounts, nothing personal
+        assert "REF-A1" in warnings[0].message
+        assert "10000" in warnings[0].message
+        assert "8000" in warnings[0].message
+
+    def test_warning_sales_minus_received_gst_differs_from_overall_outstanding(self):
+        # (b) Sales Amt: 50000, GST: 5000, EMI Received: 20000
+        # Sales Amt - (received - GST) = 50000 - (20000 - 5000) = 35000
+        # Sheet's Overall Outstanding = 30000 (differs by 5000 > 0.01)
+        rows = [
+            {
+                "Reference": "REF-B1",
+                "Payment Type": "Salary",
+                "Sales Amt": 50000,
+                "GST": 5000,
+                "EMI Received": 20000,
+                "Overall Outstanding": 30000,
+            }
+        ]
+        month_map = {}
+        static_cols = {
+            "Reference": "reference",
+            "Payment Type": "payment_type",
+            "Sales Amt": "sales_amount",
+            "GST": "gst",
+            "EMI Received": "emi_received",
+            "Overall Outstanding": "overall_outstanding",
+        }
+
+        report = validate_excel_import(rows, month_map, static_cols)
+
+        assert not report.has_errors
+        assert report.has_warnings
+        warnings = report.get_warnings_by_code("overall_outstanding_mismatch")
+        assert len(warnings) == 1
+        assert warnings[0].severity == "warning"
+        # Message includes Reference and the two amounts, nothing personal
+        assert "REF-B1" in warnings[0].message
+        assert "35000" in warnings[0].message
+        assert "30000" in warnings[0].message
+
+    def test_first_month_due_equals_monthly_deduction_plus_gst_other_months_equal_monthly_deduction(self):
+        # Direct function check
+        monthly_deduction = Decimal("5000.00")
+        gst = Decimal("900.00")
+        assert calculate_installment_due(monthly_deduction, gst, month_index=0) == Decimal("5900.00")
+        assert calculate_installment_due(monthly_deduction, gst, month_index=1) == Decimal("5000.00")
+        assert calculate_installment_due(monthly_deduction, gst, month_index=2) == Decimal("5000.00")
+
+        # Parsing contract installments check
+        row = {
+            "Reference": "REF-DUE",
+            "Payment Type": "Salary",
+            "Monthly Deduction": "5000.00",
+            "GST": "900.00",
+            "Salary Feb": "5900.00",
+            "Salary Mar": "5000.00",
+            "Salary Apr": "5000.00",
+        }
+        month_map = {
+            "Salary Feb": ("salary", 2, 2025),
+            "Salary Mar": ("salary", 3, 2025),
+            "Salary Apr": ("salary", 4, 2025),
+        }
+        static_cols = {
+            "Reference": "reference",
+            "Payment Type": "payment_type",
+            "Monthly Deduction": "monthly_deduction",
+            "GST": "gst",
+        }
+        parsed = ParsedSheet(
+            sheet_name="TestSheet",
+            headers=list(row.keys()),
+            rows=[row],
+            month_columns=month_map,
+            static_columns=static_cols,
+        )
+        contracts = parse_sheet_to_contracts(parsed)
+        assert len(contracts) == 1
+        installments = contracts[0]["installments"]
+        assert len(installments) == 3
+        # First month due = Monthly Deduction + GST
+        assert installments[0]["due_amount"] == Decimal("5900.00")
+        # Other months due = Monthly Deduction
+        assert installments[1]["due_amount"] == Decimal("5000.00")
+        assert installments[2]["due_amount"] == Decimal("5000.00")
+
+
+# ---------------------------------------------------------------------------
+# DB-write tests – run against finance_test (never finance_automation)
+# ---------------------------------------------------------------------------
+
+import asyncio
+import os
+import pytest
+
+# Only run when DATABASE_URL explicitly points at finance_test
+_DB_URL = os.environ.get("DATABASE_URL", "")
+_SKIP_DB = "finance_test" not in _DB_URL
+
+pytestmark_db = pytest.mark.skipif(
+    _SKIP_DB,
+    reason="Set DATABASE_URL to finance_test to run DB-write tests",
+)
+
+
+@pytest.mark.skipif(_SKIP_DB, reason="Needs finance_test DATABASE_URL")
+def test_three_contracts_db_write():
+    """End-to-end upsert test against finance_test DB (3 synthetic contracts)."""
+    asyncio.run(_run_db_write_test())
+
+
+async def _run_db_write_test():
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.db.session import Base
+    from app.importer.service import upsert_contracts
+    from app.models import Installment, Contract
+    from sqlalchemy import select
+
+    engine = create_async_engine(_DB_URL, echo=False)
+    # Create tables fresh
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    months = [date(2025, 2, 1), date(2025, 3, 1), date(2025, 4, 1)]
+
+    def _inst(due_month, ext, sal, due, cell_status=None):
+        return {
+            "due_month": due_month,
+            "external_amount": Decimal(str(ext)) if ext is not None else None,
+            "salary_amount": Decimal(str(sal)) if sal is not None else None,
+            "due_amount": Decimal(str(due)) if due is not None else None,
+            "not_status": cell_status,
+        }
+
+    contracts = [
+        # 1 – Employee: salary payments only
+        {
+            "reference": "EMP-001",
+            "payment_type": "salary",
+            "sales_amount": Decimal("30000.00"),
+            "gst": Decimal("900.00"),
+            "monthly_deduction": Decimal("5000.00"),
+            "installments": [
+                _inst(months[0], None, "5900.00", "5900.00"),
+                _inst(months[1], None, "5000.00", "5000.00"),
+                _inst(months[2], None, "5000.00", "5000.00"),
+            ],
+        },
+        # 2 – External: external payments only
+        {
+            "reference": "EXT-001",
+            "payment_type": "external",
+            "sales_amount": Decimal("20000.00"),
+            "gst": Decimal("600.00"),
+            "monthly_deduction": Decimal("3000.00"),
+            "installments": [
+                _inst(months[0], "3600.00", None, "3600.00"),
+                _inst(months[1], "3000.00", None, "3000.00"),
+                _inst(months[2], "3000.00", None, "3000.00"),
+            ],
+        },
+        # 3 – Blank cells with one "Not Received"
+        {
+            "reference": "BLK-001",
+            "payment_type": "external",
+            "sales_amount": Decimal("10000.00"),
+            "gst": Decimal("300.00"),
+            "monthly_deduction": Decimal("2000.00"),
+            "installments": [
+                _inst(months[0], None, None, "2300.00", cell_status="not_received"),
+                _inst(months[1], None, None, "2000.00"),
+                _inst(months[2], None, None, "2000.00"),
+            ],
+        },
+    ]
+
+    async with async_session() as s, s.begin():
+        await upsert_contracts(s, contracts, upload_id=1)
+        await s.flush()
+
+        # installment counts
+        for ref, expected in [("EMP-001", 3), ("EXT-001", 3), ("BLK-001", 3)]:
+            stmt = (
+                select(Installment)
+                .join(Contract, Contract.id == Installment.contract_id)
+                .where(Contract.reference == ref)
+            )
+            rows = (await s.execute(stmt)).scalars().all()
+            assert len(rows) == expected, f"{ref}: expected {expected} rows, got {len(rows)}"
+
+        # EMP-001 salary sums
+        emp_rows = (await s.execute(
+            select(Installment)
+            .join(Contract, Contract.id == Installment.contract_id)
+            .where(Contract.reference == "EMP-001")
+        )).scalars().all()
+        assert sum(r.salary_amount or Decimal("0") for r in emp_rows) == Decimal("15900.00")
+        assert sum(r.received_amount for r in emp_rows) == Decimal("15900.00")
+        assert all(r.external_amount is None for r in emp_rows)
+
+        # EXT-001 external sum and sales_amount
+        ext_rows = (await s.execute(
+            select(Installment)
+            .join(Contract, Contract.id == Installment.contract_id)
+            .where(Contract.reference == "EXT-001")
+        )).scalars().all()
+        assert sum(r.external_amount or Decimal("0") for r in ext_rows) == Decimal("9600.00")
+        ext_c = (await s.execute(select(Contract).where(Contract.reference == "EXT-001"))).scalar_one()
+        assert ext_c.sales_amount == Decimal("20000.00")
+
+        # BLK-001 first month cell_status
+        blk_rows = sorted(
+            (await s.execute(
+                select(Installment)
+                .join(Contract, Contract.id == Installment.contract_id)
+                .where(Contract.reference == "BLK-001")
+            )).scalars().all(),
+            key=lambda r: r.due_month,
+        )
+        assert blk_rows[0].cell_status == "not_received"
+        assert blk_rows[0].received_amount == Decimal("0.00")
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 if __name__ == "__main__":

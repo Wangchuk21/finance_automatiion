@@ -87,4 +87,12 @@ dmypy.json
 
 # Type checking
 *.pyi
-*.pyc
+*.pyc*.sql
+*.xlsx
+*.xls
+*.csv
+.~lock.*
+backup_*
+anonymized_data/
+logs/
+.env
