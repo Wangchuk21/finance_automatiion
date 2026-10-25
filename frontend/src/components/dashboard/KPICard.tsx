@@ -9,12 +9,24 @@ interface KPICardProps {
   value: string | number;
   change?: number;
   changeLabel?: string;
+  secondaryValue?: string;
+  secondaryLabel?: string;
   icon?: React.ReactNode;
   trend?: "up" | "down" | "neutral";
   className?: string;
 }
 
-export function KPICard({ title, value, change, changeLabel, icon, trend = "neutral", className }: KPICardProps) {
+export function KPICard({
+  title,
+  value,
+  change,
+  changeLabel,
+  secondaryValue,
+  secondaryLabel,
+  icon,
+  trend = "neutral",
+  className,
+}: KPICardProps) {
   const TrendIcon = trend === "up" ? TrendingUp : trend === "down" ? TrendingDown : Minus;
   const trendColor = trend === "up" ? "text-success" : trend === "down" ? "text-critical" : "text-neutral";
 
@@ -23,7 +35,14 @@ export function KPICard({ title, value, change, changeLabel, icon, trend = "neut
       <div className="flex items-start justify-between">
         <div>
           <p className="kpi-label">{title}</p>
-          <p className="kpi-value tabular-nums">{value}</p>
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <p className="kpi-value tabular-nums">{value}</p>
+            {secondaryValue && (
+              <span className="text-xs text-text-secondary font-medium whitespace-nowrap" title={secondaryLabel}>
+                ({secondaryLabel || `All time: ${secondaryValue}`})
+              </span>
+            )}
+          </div>
           {change !== undefined && (
             <div className={cn("kpi-change flex items-center gap-1", trendColor)}>
               <TrendIcon className="h-3.5 w-3.5" />

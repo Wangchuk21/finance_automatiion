@@ -18,6 +18,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatError } from "@/lib/api";
 
 interface ValidationIssue {
   severity: "error" | "warning" | "info";
@@ -42,6 +43,7 @@ interface MonthlyBreakdown {
 }
 
 interface UploadPreview {
+  id?: number;
   contracts_count: number;
   validation_report: ValidationReport;
   monthly_breakdown: MonthlyBreakdown;
@@ -57,6 +59,7 @@ const uploadSteps: StepperStep[] = [
 export function UploadPage() {
   const [currentStep, setCurrentStep] = React.useState(0);
   const [file, setFile] = React.useState<File | null>(null);
+  const [uploadId, setUploadId] = React.useState<number | null>(null);
   const [preview, setPreview] = React.useState<UploadPreview | null>(null);
   const [isUploading, setIsUploading] = React.useState(false);
   const [isConfirming, setIsConfirming] = React.useState(false);
@@ -94,26 +97,35 @@ export function UploadPage() {
 
       const data = await response.json();
       if (response.ok) {
-        setPreview(data.preview);
+        const id = data.id ?? data.preview?.id;
+        setUploadId(id);
+        setPreview({
+          id,
+          ...data.preview,
+        });
         setCurrentStep(1); // Go to validate step
       } else {
-        alert(data.detail || "Upload failed");
+        alert(formatError(data.detail));
       }
     } catch (error) {
-      alert("Upload failed: " + error);
+      alert(error instanceof Error ? error.message : "Upload failed. Please try again.");
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleConfirm = async () => {
-    if (!preview) return;
+    const targetId = uploadId ?? preview?.id;
+    if (!targetId) {
+      alert("No upload record found to confirm.");
+      return;
+    }
     setIsConfirming(true);
     try {
-      const response = await fetch(`/api/v1/uploads/${preview.id}/confirm`, {
+      const response = await fetch(`/api/v1/uploads/${targetId}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ totp_code: totpCode }),
+        body: JSON.stringify({ totp_code: totpCode, code: totpCode }),
       });
 
       const data = await response.json();
@@ -122,12 +134,13 @@ export function UploadPage() {
         setCurrentStep(0);
         setFile(null);
         setPreview(null);
+        setUploadId(null);
         setTotpCode("");
       } else {
-        alert(data.detail || "Confirmation failed");
+        alert(formatError(data.detail));
       }
     } catch (error) {
-      alert("Confirmation failed: " + error);
+      alert(error instanceof Error ? error.message : "Confirmation failed. Please try again.");
     } finally {
       setIsConfirming(false);
     }
@@ -342,6 +355,11 @@ function ValidationIssuesList({ issues }: { issues: ValidationIssue[] }) {
 function PreviewStep({ preview, onNext, onBack }: any) {
   if (!preview) return <div>Loading...</div>;
 
+  const breakdown = (preview.monthly_breakdown || {}) as Record<string, { due?: number; received?: number }>;
+  const months = Object.keys(breakdown);
+  const totalDue = Object.values(breakdown).reduce((sum, item) => sum + (Number(item?.due) || 0), 0);
+  const totalReceived = Object.values(breakdown).reduce((sum, item) => sum + (Number(item?.received) || 0), 0);
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -358,19 +376,19 @@ function PreviewStep({ preview, onNext, onBack }: any) {
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-primary">{Object.keys(preview.monthly_breakdown).length}</p>
+            <p className="text-2xl font-bold text-primary">{months.length}</p>
             <p className="text-sm text-text-secondary">Months</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-success">Nu. {formatNumber(preview.monthly_breakdown)}</p>
+            <p className="text-2xl font-bold text-success">Nu. {formatNumber(totalDue)}</p>
             <p className="text-sm text-text-secondary">Total Due</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-warning">Nu. {formatNumber(preview.monthly_breakdown)}</p>
+            <p className="text-2xl font-bold text-warning">Nu. {formatNumber(totalReceived)}</p>
             <p className="text-sm text-text-secondary">Total Received</p>
           </CardContent>
         </Card>
@@ -392,14 +410,18 @@ function PreviewStep({ preview, onNext, onBack }: any) {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(preview.monthly_breakdown).map(([month, data]) => (
-                  <tr key={month} className="border-b border-border/50 hover:bg-neutral-light/50">
-                    <td className="p-3 font-medium">{month}</td>
-                    <td className="p-3 text-right tabular-nums">Nu. {formatNumber(data.due)}</td>
-                    <td className="p-3 text-right tabular-nums">Nu. {formatNumber(data.received)}</td>
-                    <td className="p-3 text-right tabular-nums text-critical">Nu. {formatNumber(data.due - data.received)}</td>
-                  </tr>
-                ))}
+                {Object.entries(breakdown).map(([month, data]) => {
+                  const due = Number(data?.due) || 0;
+                  const received = Number(data?.received) || 0;
+                  return (
+                    <tr key={month} className="border-b border-border/50 hover:bg-neutral-light/50">
+                      <td className="p-3 font-medium">{month}</td>
+                      <td className="p-3 text-right tabular-nums">Nu. {formatNumber(due)}</td>
+                      <td className="p-3 text-right tabular-nums">Nu. {formatNumber(received)}</td>
+                      <td className="p-3 text-right tabular-nums text-critical">Nu. {formatNumber(due - received)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -482,5 +504,9 @@ function formatBytes(bytes: number): string {
 }
 
 function formatNumber(value: number): string {
-  return new Intl.NumberFormat("en-IN").format(value);
+  if (value === null || value === undefined || isNaN(Number(value))) return "0.00";
+  return new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value));
 }

@@ -76,6 +76,7 @@ class ValidationReportSchema(BaseModel):
 
 class UploadPreviewResponse(BaseModel):
     """Preview response for upload confirmation."""
+    id: Optional[int] = None
     contracts_count: int
     validation_report: Dict[str, Any]
     monthly_breakdown: Dict[str, Dict[str, float]]
@@ -95,7 +96,22 @@ class UploadResponse(BaseModel):
 
 class UploadConfirmRequest(BaseModel):
     """Request to confirm an upload."""
-    totp_code: str = Field(..., min_length=6, max_length=6)
+    # TEMPORARY - replace with real TOTP in M3
+    totp_code: Optional[str] = None
+    code: Optional[str] = None
+
+    def get_code(self) -> str:
+        return self.code or self.totp_code or ""
+
+
+class UploadRollbackRequest(BaseModel):
+    """Request to rollback an upload."""
+    # TEMPORARY - replace with real TOTP in M3
+    totp_code: Optional[str] = None
+    code: Optional[str] = None
+
+    def get_code(self) -> str:
+        return self.code or self.totp_code or ""
 
 
 class UploadStatusResponse(BaseModel):
@@ -158,6 +174,12 @@ class MissingContractActionRequest(BaseModel):
     action: str  # "close", "keep_active", "decide_later"
     reason: Optional[str] = None
     note: Optional[str] = None
+    # TEMPORARY - replace with real TOTP in M3
+    code: Optional[str] = None
+    totp_code: Optional[str] = None
+
+    def get_code(self) -> str:
+        return self.code or self.totp_code or ""
 
 
 class MissingContractActionResponse(BaseModel):
@@ -165,4 +187,23 @@ class MissingContractActionResponse(BaseModel):
     processed: int
     total_missing: int
     action: str
+    message: str
+
+
+class CloseContractRequest(BaseModel):
+    """Request to close a contract."""
+    # TEMPORARY - replace with real TOTP in M3
+    code: Optional[str] = None
+    totp_code: Optional[str] = None
+    reason: Optional[str] = "manual_close"
+    note: Optional[str] = None
+
+    def get_code(self) -> str:
+        return self.code or self.totp_code or ""
+
+
+class CloseContractResponse(BaseModel):
+    """Response for closing a contract."""
+    contract_id: int
+    status: str
     message: str

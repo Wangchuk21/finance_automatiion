@@ -195,7 +195,7 @@ def parse_sheet_to_contracts(parsed: ParsedSheet) -> List[Dict[str, Any]]:
             elif canonical == "mobile":
                 mobile, _ = clean_mobile(value)
                 contract[canonical] = mobile
-            elif canonical in ("contract_date",):
+            elif canonical in ("contract_date", "start_date", "end_date"):
                 contract[canonical] = parse_date(value)
             elif canonical in ("emi_months", "count", "months"):
                 parsed_val = parse_int(value)
@@ -207,24 +207,51 @@ def parse_sheet_to_contracts(parsed: ParsedSheet) -> List[Dict[str, Any]]:
                     contract[canonical] = parsed_val
             else:
                 contract[canonical] = str(value).strip() if value is not None else None
-        
-        # Reshape monthly columns
-        installments = reshape_month_columns(row, parsed.month_columns)
-        monthly_ded = contract.get("monthly_deduction")
-        gst_amt = contract.get("gst")
-        for idx, inst in enumerate(installments):
-            inst["due_amount"] = calculate_installment_due(monthly_ded, gst_amt, idx)
-        
+
+        # Map header "Posting Date" -> start_date (also fill contract_date with the same value)
+        if contract.get("start_date"):
+            contract["contract_date"] = contract["start_date"]
+        elif contract.get("contract_date"):
+            contract["start_date"] = contract["contract_date"]
+
+        # Missing Ending Date is a WARNING (derive it as posting month + EMI months - 1)
+        if not contract.get("end_date") and contract.get("start_date") and contract.get("emi_months"):
+            try:
+                import calendar
+                s_date = datetime.strptime(str(contract["start_date"])[:10], "%Y-%m-%d").date()
+                emi_m = int(contract["emi_months"])
+                total_m = (s_date.year * 12 + s_date.month - 1) + (emi_m - 1)
+                end_y = total_m // 12
+                end_m = (total_m % 12) + 1
+                max_d = calendar.monthrange(end_y, end_m)[1]
+                end_d = min(s_date.day, max_d)
+                contract["end_date"] = date(end_y, end_m, end_d).isoformat()
+            except Exception:
+                pass
+
+        # A missing or invalid Posting Date is an ERROR for that row (the schedule cannot be built)
+        has_posting_col = any(c in ("start_date", "contract_date") for c in parsed.static_columns.values())
+        if has_posting_col and not contract.get("start_date"):
+            contract["schedule_error"] = "Missing or invalid Posting Date (the schedule cannot be built)"
+            installments = []
+        else:
+            # Reshape monthly columns
+            installments = reshape_month_columns(row, parsed.month_columns)
+            monthly_ded = contract.get("monthly_deduction")
+            gst_amt = contract.get("gst")
+            for idx, inst in enumerate(installments):
+                inst["due_amount"] = calculate_installment_due(monthly_ded, gst_amt, idx)
+
         if not contract.get("reference"):
             continue  # Skip rows without reference
-        
+
         # Derive channel
         channel, _ = derive_channel(contract.get("payment_type"), row, parsed.month_columns)
         contract["channel"] = channel
-        
+
         contract["installments"] = installments
         contracts.append(contract)
-    
+
     return contracts
 
 
@@ -244,13 +271,13 @@ def import_excel_file(
 ) -> Tuple[List[Dict[str, Any]], ValidationReport, Dict[str, Any]]:
     """
     Complete import pipeline: read, parse, validate.
-    
+
     Returns:
         (contracts, validation_report, preview_summary)
     """
     # Read and parse
     parsed = read_excel_sheet(file_path, sheet_name, header_row)
-    
+
     # Validate using original parsed rows (with original column names)
     report = validate_excel_import(
         parsed.rows,
@@ -258,12 +285,45 @@ def import_excel_file(
         parsed.static_columns,
         parsed.sheet_totals,
     )
-    
+
+    # Check Posting Date and Ending Date errors/warnings per row
+    posting_orig = None
+    ending_orig = None
+    for orig_col, canon in parsed.static_columns.items():
+        if canon in ("start_date", "contract_date"):
+            posting_orig = orig_col
+        elif canon == "end_date":
+            ending_orig = orig_col
+
+    if posting_orig or ending_orig:
+        for row_idx, row in enumerate(parsed.rows, start=header_row + 1 if header_row else 2):
+            ref_val = str(row.get("Reference", "")).strip().lower()
+            if ref_val in ("total", "sum", "grand total", "subtotal"):
+                continue
+
+            # Posting Date: missing or invalid is an ERROR
+            if posting_orig:
+                val = row.get(posting_orig)
+                if val is None or not str(val).strip():
+                    report.add_error("missing_posting_date", f"Missing Posting Date", row=row_idx, column=posting_orig)
+                elif not parse_date(val):
+                    if not any(i.code == "invalid_date" and i.row == row_idx for i in report.issues):
+                        report.add_error("invalid_date", f"Invalid date format: '{val}'", row=row_idx, column=posting_orig, value=val)
+
+            # Ending Date: missing or invalid is a WARNING
+            if ending_orig:
+                val = row.get(ending_orig)
+                if val is None or not str(val).strip():
+                    report.add_warning("missing_ending_date", f"Missing Ending Date; derived from posting month and EMI months", row=row_idx, column=ending_orig)
+                elif not parse_date(val):
+                    report.add_warning("invalid_ending_date", f"Invalid Ending Date format: '{val}'; derived from posting month and EMI months", row=row_idx, column=ending_orig, value=val)
+            elif posting_orig:
+                report.add_warning("missing_ending_date", f"Missing Ending Date; derived from posting month and EMI months", row=row_idx)
+
     # Convert to contract format
     contracts = parse_sheet_to_contracts(parsed)
-    
+
     # Generate preview using contracts (which have installments)
     from app.importer.validation import generate_preview_summary
     preview = generate_preview_summary(contracts, parsed.month_columns)
-    
     return contracts, report, preview

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.confirm import verify_confirm_code
 from app.db.session import get_session
 from app.importer.reader import import_excel_file, calculate_file_checksum
 from app.importer.service import upsert_contracts, rollback_upload
@@ -28,6 +29,7 @@ from app.schemas.uploads import (
     UploadResponse,
     UploadPreviewResponse,
     UploadConfirmRequest,
+    UploadRollbackRequest,
     UploadStatusResponse,
     ComparisonPreviewResponse,
     MissingContractActionRequest,
@@ -199,6 +201,7 @@ async def create_upload(
             as_of_date=upload.as_of_date,
             uploaded_at=upload.upload_time,
             preview=UploadPreviewResponse(
+                id=upload.id,
                 contracts_count=len(contracts),
                 validation_report=report.to_dict(),
                 monthly_breakdown=preview.get("monthly_breakdown", {}),
@@ -238,6 +241,7 @@ async def get_upload_preview(
     validation_report = summary.get("validation_report", {})
     
     return UploadPreviewResponse(
+        id=upload.id,
         contracts_count=summary.get("contracts_count", 0),
         validation_report=validation_report,
         monthly_breakdown=summary.get("monthly_breakdown", {}),
@@ -351,6 +355,16 @@ async def handle_missing_contracts(
         invalid = requested_ids - missing_ids
         raise HTTPException(400, f"Invalid contract IDs: {invalid}")
     
+    if request.action == "close":
+        # TEMPORARY - replace with real TOTP in M3
+        await verify_confirm_code(
+            code=request.get_code(),
+            action="close_contract",
+            entity_id=str(upload_id),
+            entity_type="contract",
+            session=session,
+        )
+
     processed = 0
     for contract_id in request.contract_ids:
         if request.action == "close":
@@ -424,8 +438,17 @@ async def confirm_upload(
 ):
     """
     Step 4: Confirm upload and persist to database.
-    Requires TOTP code for security.
+    # TEMPORARY - replace with real TOTP in M3
     """
+    # Verify confirmation code (TEMPORARY – replace with real TOTP in M3)
+    await verify_confirm_code(
+        code=request.get_code(),
+        action="confirm_upload",
+        entity_id=str(upload_id),
+        entity_type="upload",
+        session=session,
+    )
+
     upload = await session.get(Upload, upload_id)
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
@@ -435,10 +458,6 @@ async def confirm_upload(
             status_code=400,
             detail=f"Upload already {upload.status.value}"
         )
-    
-    # TODO: Verify TOTP code
-    # if not verify_totp(current_user, request.totp_code):
-    #     raise HTTPException(400, "Invalid authenticator code")
     
     # Parse JSON string back to dict
     summary = json.loads(upload.summary) if upload.summary else {}
@@ -511,18 +530,29 @@ async def confirm_upload(
 @router.post("/{upload_id}/rollback", response_model=UploadStatusResponse)
 async def rollback_upload_endpoint(
     upload_id: int,
+    request: UploadRollbackRequest,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Rollback a confirmed upload."""
+    """
+    Rollback a confirmed upload.
+    # TEMPORARY - replace with real TOTP in M3
+    """
+    # Verify confirmation code (TEMPORARY – replace with real TOTP in M3)
+    await verify_confirm_code(
+        code=request.get_code(),
+        action="rollback_upload",
+        entity_id=str(upload_id),
+        entity_type="upload",
+        session=session,
+    )
+
     upload = await session.get(Upload, upload_id)
     if not upload:
         raise HTTPException(404, "Upload not found")
-    
+
     if upload.status != UploadStatus.CONFIRMED:
         raise HTTPException(400, f"Can only rollback confirmed uploads, current: {upload.status.value}")
-    
-    # TODO: Implement proper rollback using installment_history
     success = await rollback_upload(session, upload_id)
     
     if success:

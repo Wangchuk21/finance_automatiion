@@ -19,7 +19,9 @@ CANONICAL_COLUMNS = {
     "customer": ["customer", "customer name", "client", "client name"],
     "cid": ["cid", "customer id", "customer_id", "c.i.d"],
     "mobile": ["mobile", "phone", "contact", "mobile no", "mobile number"],
-    "contract_date": ["contract date", "contract_date", "start date", "start_date"],
+    "start_date": ["posting date", "posting_date", "posting", "start date", "start_date"],
+    "contract_date": ["contract date", "contract_date"],
+    "end_date": ["ending date", "ending_date", "end date", "end_date"],
     "sales_amount": ["sales amount", "sales_amount", "amount", "sale amount", "sales amt"],
     "gst": ["gst", "tax", "gst amount"],
     # Monthly column patterns (base names)
@@ -507,22 +509,37 @@ def calculate_installment_due(
     return base.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def parse_date(value: any) -> Optional[str]:
-    """Parse a date from Excel cell, return ISO format string."""
+def parse_date(value: Any) -> Optional[str]:
+    """Parse a date from Excel cell (text, Excel date cell, datetime, serial), return ISO format string."""
     if value is None:
         return None
-    
-    from datetime import date, datetime
-    
+
+    # Handle openpyxl Cell object
+    if hasattr(value, "value"):
+        value = value.value
+        if value is None:
+            return None
+
+    from datetime import date, datetime, timedelta
+
     if isinstance(value, datetime):
         return value.date().isoformat()
     if isinstance(value, date):
         return value.isoformat()
-    
+
+    # Handle numeric Excel serial date (e.g. 45550 -> 2024-09-15)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if 10000 <= value <= 100000:
+            try:
+                excel_epoch = datetime(1899, 12, 30)
+                return (excel_epoch + timedelta(days=float(value))).date().isoformat()
+            except Exception:
+                pass
+
     str_val = str(value).strip()
-    if not str_val:
+    if not str_val or str_val.lower() in ("", "na", "n/a", "-", "nil", "none"):
         return None
-    
+
     # Try common date formats
     formats = [
         "%Y-%m-%d",
@@ -534,14 +551,20 @@ def parse_date(value: any) -> Optional[str]:
         "%b-%d-%Y",
         "%b-%d-%y",
         "%Y/%m/%d",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S",
     ]
-    
+
     for fmt in formats:
         try:
             return datetime.strptime(str_val, fmt).date().isoformat()
         except ValueError:
             continue
-    
+
     return None
 
 

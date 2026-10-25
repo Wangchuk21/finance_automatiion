@@ -121,6 +121,26 @@ async def upsert_contracts(
     return result
 
 
+def _to_date(value: Any) -> Optional[date]:
+    """Convert value to datetime.date object or None."""
+    if value is None:
+        return None
+    from datetime import datetime
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        from app.importer.column_map import parse_date
+        s = parse_date(value)
+        if s:
+            try:
+                return datetime.strptime(s[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
+    return None
+
+
 def _update_contract_fields(contract: Contract, data: Dict[str, Any]) -> None:
     """Update contract fields from parsed data."""
     field_mapping = {
@@ -130,12 +150,9 @@ def _update_contract_fields(contract: Contract, data: Dict[str, Any]) -> None:
         "cost_center": "cost_center",
         "ministry_agency": "ministry_agency",
         "payment_type": "payment_type",
-        "emi_months": "emi_months",
         "customer": "customer",
         "cid": "cid",
         "mobile": "mobile",
-        "contract_date": "contract_date",
-        "monthly_deduction": "monthly_deduction",
         "sales_amount": "sales_amount",
         "gst": "gst",
     }
@@ -144,6 +161,31 @@ def _update_contract_fields(contract: Contract, data: Dict[str, Any]) -> None:
         value = data.get(data_key)
         if value is not None:
             setattr(contract, model_attr, value)
+
+    # Dates
+    for date_key in ("start_date", "contract_date", "end_date"):
+        val = data.get(date_key)
+        if val is not None:
+            d = _to_date(val)
+            if d is not None:
+                setattr(contract, date_key, d)
+
+    if contract.start_date and not contract.contract_date:
+        contract.contract_date = contract.start_date
+    elif contract.contract_date and not contract.start_date:
+        contract.start_date = contract.contract_date
+
+    # Confirm emi_months and monthly_deduction are stored
+    if "emi_months" in data and data["emi_months"] is not None:
+        try:
+            contract.emi_months = int(data["emi_months"])
+        except (ValueError, TypeError):
+            pass
+
+    if "monthly_deduction" in data and data["monthly_deduction"] is not None:
+        md = _to_decimal(data["monthly_deduction"])
+        if md is not None:
+            contract.monthly_deduction = md
 
     # Ensure state is active if not set
     if not contract.state:

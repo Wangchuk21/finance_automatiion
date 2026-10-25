@@ -63,11 +63,10 @@ async def root():
 
 
 # Import and include routers
-from app.api import dashboard, uploads
+from app.api import contracts, dashboard, uploads
 app.include_router(dashboard.router, prefix="/api/v1", tags=["dashboard"])
 app.include_router(uploads.router, prefix="/api/v1/uploads", tags=["uploads"])
-# from app.api import contracts, installments, contacts, notifications, users
-# app.include_router(contracts.router, prefix="/api/v1/contracts", tags=["contracts"])
+app.include_router(contracts.router, prefix="/api/v1/contracts", tags=["contracts"])
 # app.include_router(installments.router, prefix="/api/v1/installments", tags=["installments"])
 # app.include_router(contacts.router, prefix="/api/v1/contacts", tags=["contacts"])
 # app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])

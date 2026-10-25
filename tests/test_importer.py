@@ -80,6 +80,11 @@ class TestColumnMap:
         assert get_canonical_column("Payment Type") == "payment_type"
         assert get_canonical_column("Customer ID") == "cid"
         assert get_canonical_column("Mobile No") == "mobile"
+        assert get_canonical_column("Posting Date") == "start_date"
+        assert get_canonical_column("Ending Date") == "end_date"
+        assert get_canonical_column("Start Date") == "start_date"
+        assert get_canonical_column("End Date") == "end_date"
+        assert get_canonical_column("Contract Date") == "contract_date"
         assert get_canonical_column("Unknown Column") is None
     
     def test_parse_amount(self):
@@ -100,8 +105,70 @@ class TestColumnMap:
         assert parse_date("15/01/2024") == "2024-01-15"
         assert parse_date("15-Jan-2024") == "2024-01-15"
         assert parse_date("Jan-15-2024") == "2024-01-15"
+        assert parse_date(datetime(2024, 1, 15, 10, 30)) == "2024-01-15"
+        assert parse_date(date(2024, 1, 15)) == "2024-01-15"
         assert parse_date("") is None
         assert parse_date("invalid") is None
+
+    def test_posting_and_ending_date_parsing_and_derivation(self):
+        from app.importer.reader import ParsedSheet, parse_sheet_to_contracts
+        parsed = ParsedSheet(
+            sheet_name="Test",
+            headers=["Reference", "Posting Date", "Ending Date", "EMI Months", "Monthly Deduction", "Salary Sep 24"],
+            rows=[
+                {
+                    "Reference": "REF-01",
+                    "Posting Date": "2024-09-01",
+                    "Ending Date": "2025-08-01",
+                    "EMI Months": 12,
+                    "Monthly Deduction": 1000,
+                    "Salary Sep 24": 1000,
+                },
+                {
+                    "Reference": "REF-02",
+                    "Posting Date": "2024-09-01",
+                    "Ending Date": None,
+                    "EMI Months": 12,
+                    "Monthly Deduction": 1000,
+                    "Salary Sep 24": 1000,
+                },
+                {
+                    "Reference": "REF-03",
+                    "Posting Date": None,
+                    "Ending Date": "2025-08-01",
+                    "EMI Months": 12,
+                    "Monthly Deduction": 1000,
+                    "Salary Sep 24": 1000,
+                },
+            ],
+            month_columns={"Salary Sep 24": ("salary", 9, 2024)},
+            static_columns={
+                "Reference": "reference",
+                "Posting Date": "start_date",
+                "Ending Date": "end_date",
+                "EMI Months": "emi_months",
+                "Monthly Deduction": "monthly_deduction",
+            },
+        )
+        contracts = parse_sheet_to_contracts(parsed)
+        assert len(contracts) == 3
+
+        c1 = next(c for c in contracts if c["reference"] == "REF-01")
+        assert c1["start_date"] == "2024-09-01"
+        assert c1["contract_date"] == "2024-09-01"
+        assert c1["end_date"] == "2025-08-01"
+        assert len(c1["installments"]) == 1
+
+        c2 = next(c for c in contracts if c["reference"] == "REF-02")
+        assert c2["start_date"] == "2024-09-01"
+        assert c2["contract_date"] == "2024-09-01"
+        assert c2["end_date"] == "2025-08-01"
+        assert len(c2["installments"]) == 1
+
+        c3 = next(c for c in contracts if c["reference"] == "REF-03")
+        assert c3.get("start_date") is None
+        assert len(c3["installments"]) == 0
+        assert "schedule_error" in c3
     
     def test_clean_cid(self):
         assert clean_cid("CID12345") == "CID12345"
@@ -927,18 +994,22 @@ import os
 import pytest
 
 # Only run when DATABASE_URL explicitly points at finance_test
-_DB_URL = os.environ.get("DATABASE_URL", "")
-_SKIP_DB = "finance_test" not in _DB_URL
-
-pytestmark_db = pytest.mark.skipif(
-    _SKIP_DB,
-    reason="Set DATABASE_URL to finance_test to run DB-write tests",
+# Only run against finance_test (never finance_automation)
+_DB_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    os.environ.get("DATABASE_URL")
+    if "finance_test" in os.environ.get("DATABASE_URL", "")
+    else "postgresql+asyncpg://postgres:postgres@localhost:5432/finance_test",
 )
+assert "finance_test" in _DB_URL, f"Expected finance_test in URL, got {_DB_URL}"
+assert "finance_automation" not in _DB_URL, "MUST NEVER RUN AGAINST finance_automation"
+
+_SKIP_DB = "finance_test" not in _DB_URL
 
 
 @pytest.mark.skipif(_SKIP_DB, reason="Needs finance_test DATABASE_URL")
 def test_three_contracts_db_write():
-    """End-to-end upsert test against finance_test DB (3 synthetic contracts)."""
+    """End-to-end upsert test against finance_test DB (3 synthetic contracts with dates and tenure)."""
     asyncio.run(_run_db_write_test())
 
 
@@ -977,6 +1048,9 @@ async def _run_db_write_test():
             "sales_amount": Decimal("30000.00"),
             "gst": Decimal("900.00"),
             "monthly_deduction": Decimal("5000.00"),
+            "start_date": "2025-02-01",
+            "end_date": "2025-04-01",
+            "emi_months": 3,
             "installments": [
                 _inst(months[0], None, "5900.00", "5900.00"),
                 _inst(months[1], None, "5000.00", "5000.00"),
@@ -990,6 +1064,9 @@ async def _run_db_write_test():
             "sales_amount": Decimal("20000.00"),
             "gst": Decimal("600.00"),
             "monthly_deduction": Decimal("3000.00"),
+            "start_date": date(2025, 2, 1),
+            "end_date": date(2025, 4, 1),
+            "emi_months": 3,
             "installments": [
                 _inst(months[0], "3600.00", None, "3600.00"),
                 _inst(months[1], "3000.00", None, "3000.00"),
@@ -1003,6 +1080,9 @@ async def _run_db_write_test():
             "sales_amount": Decimal("10000.00"),
             "gst": Decimal("300.00"),
             "monthly_deduction": Decimal("2000.00"),
+            "start_date": "2025-02-01",
+            "end_date": "2025-04-01",
+            "emi_months": 3,
             "installments": [
                 _inst(months[0], None, None, "2300.00", cell_status="not_received"),
                 _inst(months[1], None, None, "2000.00"),
@@ -1014,6 +1094,19 @@ async def _run_db_write_test():
     async with async_session() as s, s.begin():
         await upsert_contracts(s, contracts, upload_id=1)
         await s.flush()
+
+        # Assert start_date, end_date, emi_months, monthly_deduction stored for all 3 contracts
+        for ref, exp_start, exp_end, exp_emi, exp_md in [
+            ("EMP-001", date(2025, 2, 1), date(2025, 4, 1), 3, Decimal("5000.00")),
+            ("EXT-001", date(2025, 2, 1), date(2025, 4, 1), 3, Decimal("3000.00")),
+            ("BLK-001", date(2025, 2, 1), date(2025, 4, 1), 3, Decimal("2000.00")),
+        ]:
+            c = (await s.execute(select(Contract).where(Contract.reference == ref))).scalar_one()
+            assert c.start_date == exp_start, f"{ref}: expected start_date {exp_start}, got {c.start_date}"
+            assert c.end_date == exp_end, f"{ref}: expected end_date {exp_end}, got {c.end_date}"
+            assert c.contract_date == exp_start, f"{ref}: expected contract_date {exp_start}, got {c.contract_date}"
+            assert c.emi_months == exp_emi, f"{ref}: expected emi_months {exp_emi}, got {c.emi_months}"
+            assert c.monthly_deduction == exp_md, f"{ref}: expected monthly_deduction {exp_md}, got {c.monthly_deduction}"
 
         # installment counts
         for ref, expected in [("EMP-001", 3), ("EXT-001", 3), ("BLK-001", 3)]:

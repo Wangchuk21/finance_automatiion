@@ -19,9 +19,12 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "Finance Automation"
-    APP_ENV: str = "development"
+    APP_ENV: str = "prod"
     DEBUG: bool = True
     LOG_LEVEL: str = "INFO"
+
+    # Temporary confirmation code (dev only – REPLACE WITH REAL TOTP IN M3)
+    TEMP_CONFIRM_CODE: str = ""
 
     # Database
     DATABASE_URL: str = Field(..., description="Async PostgreSQL connection URL")
