@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend } from "recharts";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +32,7 @@ export function AgingBucketChart({ data, className }: AgingBucketChartProps) {
                 borderRadius: "8px",
                 boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
               }}
-              formatter={(value: number) => [`Nu. ${value.toLocaleString("en-IN")}`, "Amount"]}
+              formatter={(value: any) => [`Nu. ${Number(value || 0).toLocaleString("en-IN")}`, "Amount"]}
             />
             <Legend />
             <Bar dataKey="amount" name="Amount" fill="#1F4FD8" radius={[0, 4, 4, 0]} maxBarSize={32}>

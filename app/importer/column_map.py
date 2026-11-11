@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Pattern, Tuple, Union
 CANONICAL_COLUMNS = {
     # Static contract columns
     "reference": ["reference", "ref", "contract reference", "contract_ref"],
-    "item": ["item", "product", "description"],
+    "item": ["item", "item name", "product", "description"],
     "brand": ["brand", "make"],
     "region": ["region", "area", "zone"],
     "cost_center": ["cost center", "cost_centre", "cost centre", "cc", "cost center code"],
@@ -17,8 +17,30 @@ CANONICAL_COLUMNS = {
     "payment_type": ["payment type", "payment_type", "payment mode", "mode"],
     "emi_months": ["emi months", "emi_months", "emi", "tenure", "term"],
     "customer": ["customer", "customer name", "client", "client name"],
-    "cid": ["cid", "customer id", "customer_id", "c.i.d"],
-    "mobile": ["mobile", "phone", "contact", "mobile no", "mobile number"],
+    "cid": [
+        "cid",
+        "customer id",
+        "customer_id",
+        "c.i.d",
+        "cid/passport no/work permit",
+        "cid/passport",
+        "passport no",
+        "passport number",
+        "work permit",
+    ],
+    "mobile": [
+        "mobile",
+        "phone",
+        "contact",
+        "mobile no",
+        "mobile no.",
+        "mobile number",
+        "mobile/contact no",
+        "mobile/contact",
+        "contact no",
+        "contact no.",
+        "contact number",
+    ],
     "start_date": ["posting date", "posting_date", "posting", "start date", "start_date"],
     "contract_date": ["contract date", "contract_date"],
     "end_date": ["ending date", "ending_date", "end date", "end_date"],
@@ -420,15 +442,27 @@ def validate_consecutive_months(
     return True, None
 
 
+def _loose_column_key(name: str) -> str:
+    """Punctuation-insensitive key so headers like 'CID / Passport No' still match."""
+    return re.sub(r"[^a-z0-9]+", " ", normalize_column_name(name)).strip()
+
+
 def get_canonical_column(name: str) -> Optional[str]:
     """Map a column name to its canonical form."""
     normalized = normalize_column_name(name)
     corrected = apply_typo_correction(normalized)
-    
+
     for canonical, aliases in CANONICAL_COLUMNS.items():
         if corrected in [normalize_column_name(a) for a in aliases]:
             return canonical
-    
+
+    # Fallback: ignore punctuation/spacing differences in headers
+    loose = _loose_column_key(corrected)
+    if loose:
+        for canonical, aliases in CANONICAL_COLUMNS.items():
+            if any(loose == _loose_column_key(a) for a in aliases):
+                return canonical
+
     return None
 
 

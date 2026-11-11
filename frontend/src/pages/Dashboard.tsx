@@ -5,6 +5,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import {
   ExternalLink,
   ArrowRight,
+  ArrowLeft,
+  ChevronRight,
   RotateCcw,
   Download,
   X,
@@ -12,7 +14,10 @@ import {
   Filter,
 } from "lucide-react";
 import { KPICard } from "@/components/dashboard/KPICard";
-import { RegionComparisonChart } from "@/components/dashboard/RegionComparisonChart";
+import {
+  RegionComparisonChart,
+  type RegionMetric,
+} from "@/components/dashboard/RegionComparisonChart";
 import { AgingBucketChart } from "@/components/dashboard/AgingBucketChart";
 import { CollectionTrendChart } from "@/components/dashboard/CollectionTrendChart";
 import { NeedsAttentionCard } from "@/components/dashboard/NeedsAttentionCard";
@@ -21,7 +26,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { cn, formatNumber } from "@/lib/utils";
+import {
   dashboardApi,
+  type CostCenterContractData,
+  type CostCenterData,
   type DashboardData,
   type UploadRowData,
 } from "@/lib/api";
@@ -41,6 +58,16 @@ export function Dashboard() {
   const [data, setData] = React.useState<DashboardData | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [costCenterRegion, setCostCenterRegion] = React.useState<string | null>(null);
+  const [costCenters, setCostCenters] = React.useState<CostCenterData[] | null>(null);
+  const [costCentersLoading, setCostCentersLoading] = React.useState(false);
+  const [costCentersError, setCostCentersError] = React.useState<string | null>(null);
+  const [selectedCostCenter, setSelectedCostCenter] = React.useState<string | null>(null);
+  const [costCenterContracts, setCostCenterContracts] = React.useState<CostCenterContractData[] | null>(null);
+  const [contractsLoading, setContractsLoading] = React.useState(false);
+  const [contractsError, setContractsError] = React.useState<string | null>(null);
+  const [costMetric, setCostMetric] = React.useState<RegionMetric>("receivable");
+  const drilldownRef = React.useRef<HTMLDivElement | null>(null);
 
   const preset = searchParams.get("preset") || "all";
   const fromMonth = searchParams.get("from") || "";
@@ -99,6 +126,82 @@ export function Dashboard() {
   const handleReset = () => {
     setSearchParams(new URLSearchParams());
   };
+
+  const openCostCenters = async (
+    selectedRegion: string,
+    metric?: RegionMetric
+  ) => {
+    setCostMetric(metric ?? costMetric);
+    setCostCenterRegion(selectedRegion);
+    setCostCenters(null);
+    setCostCentersError(null);
+    setCostCentersLoading(true);
+    setSelectedCostCenter(null);
+    setCostCenterContracts(null);
+    setContractsError(null);
+    try {
+      const result = await dashboardApi.getCostCenters({
+        preset,
+        from: fromMonth || undefined,
+        to: toMonth || undefined,
+        region: selectedRegion,
+        channel: channel || undefined,
+      });
+      setCostCenters(result);
+    } catch (err) {
+      setCostCentersError(
+        err instanceof Error ? err.message : "Failed to load cost centers"
+      );
+    } finally {
+      setCostCentersLoading(false);
+    }
+  };
+
+  const openCostCenterContracts = async (selected: string) => {
+    if (!costCenterRegion) return;
+    setSelectedCostCenter(selected);
+    setCostCenterContracts(null);
+    setContractsError(null);
+    setContractsLoading(true);
+    try {
+      const result = await dashboardApi.getCostCenterContracts({
+        preset,
+        from: fromMonth || undefined,
+        to: toMonth || undefined,
+        region: costCenterRegion,
+        channel: channel || undefined,
+        cost_center: selected,
+      });
+      setCostCenterContracts(result);
+    } catch (err) {
+      setContractsError(
+        err instanceof Error ? err.message : "Failed to load customers"
+      );
+    } finally {
+      setContractsLoading(false);
+    }
+  };
+
+  const backToCostCenters = () => {
+    setSelectedCostCenter(null);
+    setCostCenterContracts(null);
+    setContractsError(null);
+  };
+
+  const closeCostCenters = () => {
+    setCostCenterRegion(null);
+    setCostCenters(null);
+    setCostCentersError(null);
+    setSelectedCostCenter(null);
+    setCostCenterContracts(null);
+    setContractsError(null);
+  };
+
+  React.useEffect(() => {
+    if (costCenterRegion) {
+      drilldownRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [costCenterRegion]);
 
   const getExportUrl = () => {
     const query = new URLSearchParams();
@@ -319,14 +422,35 @@ export function Dashboard() {
         ))}
       </div>
 
+      {/* Region chart - full width */}
+      <RegionComparisonChart data={regions} onRegionClick={openCostCenters} />
+
+      {/* Region → Cost Center → Customer drill-down */}
+      {costCenterRegion && (
+        <div ref={drilldownRef} className="scroll-mt-24">
+          <CostCenterDrilldown
+            region={costCenterRegion}
+            rows={costCenters}
+            loading={costCentersLoading}
+            error={costCentersError}
+            selectedCostCenter={selectedCostCenter}
+            contracts={costCenterContracts}
+            contractsLoading={contractsLoading}
+            contractsError={contractsError}
+            metric={costMetric}
+            onMetricChange={setCostMetric}
+            onSelectCostCenter={openCostCenterContracts}
+            onBack={backToCostCenters}
+            onClose={closeCostCenters}
+          />
+        </div>
+      )}
+
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column - Charts */}
         <div className="lg:col-span-7 space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <RegionComparisonChart data={regions} />
-            <AgingBucketChart data={aging} />
-          </div>
+          <AgingBucketChart data={aging} />
           <CollectionTrendChart data={trend} />
         </div>
 
@@ -380,7 +504,492 @@ export function Dashboard() {
           </Card>
         </div>
       </div>
+
     </div>
+  );
+}
+
+const DRILL_METRICS: Record<
+  RegionMetric,
+  {
+    label: string;
+    activeButton: string;
+    header: string;
+    cell: string;
+    tint: string;
+    bar: string;
+  }
+> = {
+  receivable: {
+    label: "Receivable",
+    activeButton: "bg-primary text-white shadow-sm",
+    header: "text-primary",
+    cell: "text-primary font-semibold",
+    tint: "bg-primary/5",
+    bar: "bg-primary",
+  },
+  collected: {
+    label: "Collected",
+    activeButton: "bg-success text-white shadow-sm",
+    header: "text-success",
+    cell: "text-success font-semibold",
+    tint: "bg-success/5",
+    bar: "bg-success",
+  },
+  balance_due: {
+    label: "Balance Due",
+    activeButton: "bg-critical text-white shadow-sm",
+    header: "text-critical",
+    cell: "text-critical font-semibold",
+    tint: "bg-critical/5",
+    bar: "bg-critical",
+  },
+};
+
+function MetricSwitch({
+  metric,
+  onChange,
+}: {
+  metric: RegionMetric;
+  onChange: (metric: RegionMetric) => void;
+}) {
+  return (
+    <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1">
+      {(Object.keys(DRILL_METRICS) as RegionMetric[]).map((key) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => onChange(key)}
+          aria-pressed={metric === key}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            metric === key
+              ? DRILL_METRICS[key].activeButton
+              : "text-text-secondary hover:bg-neutral-light hover:text-text-primary"
+          )}
+        >
+          {DRILL_METRICS[key].label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MetricBar({
+  value,
+  max,
+  className,
+}: {
+  value: number;
+  max: number;
+  className?: string;
+}) {
+  return (
+    <span className="block h-1 w-16 overflow-hidden rounded-full bg-black/5">
+      <span
+        className={cn("block h-full rounded-full", className)}
+        style={{ width: `${Math.max(3, (value / max) * 100)}%` }}
+      />
+    </span>
+  );
+}
+
+function CostCenterDrilldown({
+  region,
+  rows,
+  loading,
+  error,
+  selectedCostCenter,
+  contracts,
+  contractsLoading,
+  contractsError,
+  metric,
+  onMetricChange,
+  onSelectCostCenter,
+  onBack,
+  onClose,
+}: {
+  region: string;
+  rows: CostCenterData[] | null;
+  loading: boolean;
+  error: string | null;
+  selectedCostCenter: string | null;
+  contracts: CostCenterContractData[] | null;
+  contractsLoading: boolean;
+  contractsError: string | null;
+  metric: RegionMetric;
+  onMetricChange: (metric: RegionMetric) => void;
+  onSelectCostCenter: (costCenter: string) => void;
+  onBack: () => void;
+  onClose: () => void;
+}) {
+  const active = DRILL_METRICS[metric];
+
+  const sortedRows = React.useMemo(
+    () => (rows ? [...rows].sort((a, b) => b[metric] - a[metric]) : null),
+    [rows, metric]
+  );
+
+  const sortedContracts = React.useMemo(
+    () =>
+      contracts
+        ? [...contracts].sort((a, b) => {
+            const aValue = metric === "collected" ? a.collected : metric === "balance_due" ? a.balance_due : a.outstanding;
+            const bValue = metric === "collected" ? b.collected : metric === "balance_due" ? b.balance_due : b.outstanding;
+            return bValue - aValue;
+          })
+        : null,
+    [contracts, metric]
+  );
+
+  const maxMetric = Math.max(
+    ...(sortedRows || []).map((row) => row[metric]),
+    1
+  );
+  const totals = (rows || []).reduce(
+    (acc, row) => ({
+      contracts: acc.contracts + row.contracts,
+      receivable: acc.receivable + row.receivable,
+      collected: acc.collected + row.collected,
+      balance_due: acc.balance_due + row.balance_due,
+    }),
+    { contracts: 0, receivable: 0, collected: 0, balance_due: 0 }
+  );
+
+  const contractTotals = (contracts || []).reduce(
+    (acc, contract) => ({
+      monthly_deduction: acc.monthly_deduction + contract.monthly_deduction,
+      outstanding: acc.outstanding + contract.outstanding,
+      collected: acc.collected + contract.collected,
+      balance_due: acc.balance_due + contract.balance_due,
+    }),
+    { monthly_deduction: 0, outstanding: 0, collected: 0, balance_due: 0 }
+  );
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div>
+          <CardTitle className="text-lg">
+            {selectedCostCenter ? `${selectedCostCenter} — Customers` : `Cost Centers — ${region}`}
+          </CardTitle>
+          <p className="text-sm text-text-secondary mt-0.5">
+            {selectedCostCenter
+              ? `Ranked by ${active.label.toLowerCase()}. Outstanding is all-time; collected and balance due follow the filters.`
+              : `Ranked by ${active.label.toLowerCase()}. Click a cost center to see the customers behind it.`}
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-xs font-medium text-text-secondary">Show by</span>
+            <MetricSwitch metric={metric} onChange={onMetricChange} />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="p-1.5 rounded-md text-text-secondary hover:bg-neutral-light hover:text-text-primary"
+          aria-label="Close cost center breakdown"
+          title="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </CardHeader>
+
+      <CardContent>
+        {selectedCostCenter ? (
+          <>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <button
+                type="button"
+                onClick={onBack}
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary-dark"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                All cost centers in {region}
+              </button>
+              {sortedContracts && sortedContracts.length > 0 && (
+                <span className="text-xs text-text-secondary">
+                  {sortedContracts.length} contract{sortedContracts.length === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+
+            {contractsLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Skeleton key={i} className="h-10 w-full" />
+                ))}
+              </div>
+            ) : contractsError ? (
+              <p className="text-critical text-sm">{contractsError}</p>
+            ) : !sortedContracts || sortedContracts.length === 0 ? (
+              <p className="text-text-secondary text-sm">
+                No contracts recorded under this cost center for the selected filters.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Contract</TableHead>
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-right">EMI / Month</TableHead>
+                      <TableHead
+                        className="text-right"
+                        title="Remaining EMI months based on outstanding ÷ monthly EMI"
+                      >
+                        EMI Left
+                      </TableHead>
+                      <TableHead
+                        className={cn("text-right", metric === "receivable" && [active.header, active.tint])}
+                        title="All-time outstanding: Sales + GST − received"
+                      >
+                        Receivable
+                      </TableHead>
+                      <TableHead className={cn("text-right", metric === "collected" && [active.header, active.tint])}>
+                        Collected
+                      </TableHead>
+                      <TableHead className={cn("text-right", metric === "balance_due" && [active.header, active.tint])}>
+                        Balance Due
+                      </TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedContracts.map((contract) => {
+                      const contact = [
+                        contract.cid ? `CID: ${contract.cid}` : "",
+                        contract.mobile ? `Mobile: ${contract.mobile}` : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ");
+                      const meta = [
+                        contract.payment_type,
+                        contract.emi_months ? `${contract.emi_months} months` : "",
+                        contract.ministry_agency,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ");
+
+                      return (
+                        <TableRow key={contract.id}>
+                          <TableCell>
+                            <div className="font-medium text-text-primary">
+                              {contract.customer || "—"}
+                            </div>
+                            {contact && (
+                              <div className="text-xs text-text-secondary">{contact}</div>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-mono text-xs text-text-primary">
+                              {contract.reference}
+                            </div>
+                            <div className="text-xs text-text-secondary">
+                              {contract.start_date ? formatDate(contract.start_date) : "—"}
+                              {" → "}
+                              {contract.end_date ? formatDate(contract.end_date) : "—"}
+                            </div>
+                          </TableCell>
+                          <TableCell className="max-w-[240px]">
+                            <div className="truncate text-text-primary" title={contract.item || contract.brand}>
+                              {contract.item || contract.brand || "—"}
+                            </div>
+                            {meta && (
+                              <div className="truncate text-xs text-text-secondary" title={meta}>
+                                {meta}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            Nu. {formatNumber(contract.monthly_deduction)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {contract.months_left === null ? (
+                              <span className="text-text-secondary">—</span>
+                            ) : (
+                              <span
+                                className={cn(
+                                  "font-medium tabular-nums",
+                                  contract.months_left === 0
+                                    ? "text-success"
+                                    : contract.months_left <= 2
+                                      ? "text-warning-dark"
+                                      : "text-text-primary"
+                                )}
+                              >
+                                {contract.months_left}{" "}
+                                {contract.emi_months ? (
+                                  <span className="ml-1 text-xs font-normal text-text-secondary">
+                                    of {contract.emi_months}
+                                  </span>
+                                ) : null}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "text-right tabular-nums",
+                              metric === "receivable" && [active.cell, active.tint]
+                            )}
+                          >
+                            Nu. {formatNumber(contract.outstanding)}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "text-right tabular-nums text-success",
+                              metric === "collected" && ["font-semibold", active.tint]
+                            )}
+                          >
+                            Nu. {formatNumber(contract.collected)}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "text-right tabular-nums text-critical",
+                              metric === "balance_due" && ["font-semibold", active.tint]
+                            )}
+                          >
+                            Nu. {formatNumber(contract.balance_due)}
+                          </TableCell>
+                          <TableCell>
+                            <ContractStatusBadge status={contract.status} />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                  <TableFooter>
+                    <TableRow>
+                      <TableCell colSpan={3}>
+                        Total — {sortedContracts.length} contract{sortedContracts.length === 1 ? "" : "s"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        Nu. {formatNumber(contractTotals.monthly_deduction)}
+                      </TableCell>
+                      <TableCell className="text-right text-text-secondary">—</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        Nu. {formatNumber(contractTotals.outstanding)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        Nu. {formatNumber(contractTotals.collected)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        Nu. {formatNumber(contractTotals.balance_due)}
+                      </TableCell>
+                      <TableCell />
+                    </TableRow>
+                  </TableFooter>
+                </Table>
+              </div>
+            )}
+          </>
+        ) : loading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : error ? (
+          <p className="text-critical text-sm">{error}</p>
+        ) : !sortedRows || sortedRows.length === 0 ? (
+          <p className="text-text-secondary text-sm">No cost centers recorded for this region.</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Cost Center</TableHead>
+                <TableHead className="text-right">Contracts</TableHead>
+                <TableHead className={cn("text-right", metric === "receivable" && [active.header, active.tint])}>
+                  Receivable
+                </TableHead>
+                <TableHead className={cn("text-right", metric === "collected" && [active.header, active.tint])}>
+                  Collected
+                </TableHead>
+                <TableHead className={cn("text-right", metric === "balance_due" && [active.header, active.tint])}>
+                  Balance Due
+                </TableHead>
+                <TableHead className="w-10" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedRows.map((row) => (
+                <TableRow
+                  key={row.cost_center}
+                  className="cursor-pointer hover:bg-neutral-light/60"
+                  onClick={() => onSelectCostCenter(row.cost_center)}
+                >
+                  <TableCell className="font-medium text-text-primary">
+                    {row.cost_center}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{row.contracts}</TableCell>
+                  <TableCell className={cn("text-right tabular-nums", metric === "receivable" && [active.cell, active.tint])}>
+                    <div className="flex flex-col items-end gap-1">
+                      <span>Nu. {formatNumber(row.receivable)}</span>
+                      {metric === "receivable" && (
+                        <MetricBar value={row.receivable} max={maxMetric} className={active.bar} />
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className={cn("text-right tabular-nums text-success", metric === "collected" && ["font-semibold", active.tint])}>
+                    <div className="flex flex-col items-end gap-1">
+                      <span>Nu. {formatNumber(row.collected)}</span>
+                      {metric === "collected" && (
+                        <MetricBar value={row.collected} max={maxMetric} className={active.bar} />
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className={cn("text-right tabular-nums text-critical", metric === "balance_due" && ["font-semibold", active.tint])}>
+                    <div className="flex flex-col items-end gap-1">
+                      <span>Nu. {formatNumber(row.balance_due)}</span>
+                      {metric === "balance_due" && (
+                        <MetricBar value={row.balance_due} max={maxMetric} className={active.bar} />
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <ChevronRight className="ml-auto h-4 w-4 text-text-secondary" />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+            <TableFooter>
+              <TableRow>
+                <TableCell>Total</TableCell>
+                <TableCell className="text-right tabular-nums">{totals.contracts}</TableCell>
+                <TableCell className={cn("text-right tabular-nums", metric === "receivable" && [active.cell, active.tint])}>
+                  Nu. {formatNumber(totals.receivable)}
+                </TableCell>
+                <TableCell className={cn("text-right tabular-nums", metric === "collected" && [active.cell, active.tint])}>
+                  Nu. {formatNumber(totals.collected)}
+                </TableCell>
+                <TableCell className={cn("text-right tabular-nums", metric === "balance_due" && [active.cell, active.tint])}>
+                  Nu. {formatNumber(totals.balance_due)}
+                </TableCell>
+                <TableCell />
+              </TableRow>
+            </TableFooter>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ContractStatusBadge({ status }: { status: string }) {
+  const normalized = (status || "").toLowerCase();
+  const variant =
+    normalized === "active" || normalized === "reopened"
+      ? "success"
+      : normalized === "missing_review"
+        ? "warning"
+        : normalized === "closed"
+          ? "neutral"
+          : "neutral";
+
+  return (
+    <Badge variant={variant}>
+      {normalized ? normalized.replace(/_/g, " ") : "unknown"}
+    </Badge>
   );
 }
 
@@ -402,12 +1011,11 @@ function DashboardSkeleton() {
         {[1, 2, 3, 4].map((i) => <KPICardSkeleton key={i} />)}
       </div>
 
+      <ChartSkeleton className="h-[420px]" />
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-7 space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ChartSkeleton />
-            <ChartSkeleton />
-          </div>
+          <ChartSkeleton />
           <ChartSkeleton />
         </div>
         <div className="lg:col-span-5 space-y-6">
@@ -430,9 +1038,9 @@ function KPICardSkeleton() {
   );
 }
 
-function ChartSkeleton() {
+function ChartSkeleton({ className }: { className?: string }) {
   return (
-    <div className="card p-6 h-[350px]">
+    <div className={cn("card p-6 h-[350px]", className)}>
       <Skeleton className="h-6 w-40 mb-4" />
       <Skeleton className="h-full w-full" />
     </div>

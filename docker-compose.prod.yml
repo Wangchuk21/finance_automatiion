@@ -1,0 +1,136 @@
+# Production Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: finance-db-prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-finance}
+      POSTGRES_USER: ${POSTGRES_USER:-finance}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finance} -d ${POSTGRES_DB:-finance}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: finance-backend-prod
+    environment:
+      - APP_ENV=production
+      - DEBUG=false
+      - LOG_LEVEL=info
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-finance}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-finance}
+      - POSTGRES_USER=${POSTGRES_USER:-finance}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-finance}
+      - SECRET_KEY=${SECRET_KEY}
+      - ANONYMIZATION_SALT=${ANONYMIZATION_SALT}
+      - TEMP_CONFIRM_CODE=${TEMP_CONFIRM_CODE}
+      - COOKIE_SECURE=true
+      - COOKIE_SAMESITE=lax
+      - CORS_ORIGINS=https://${DOMAIN:-localhost}
+      - SMTP_HOST=${SMTP_HOST:-smtp11.bt.bt}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-finance.notification@bt.bt}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-Finance Notification <finance.notification@bt.bt>}
+      - SMS_ENABLED=${SMS_ENABLED:-false}
+      - SMS_GATEWAY_URL=${SMS_GATEWAY_URL:-}
+      - SMS_API_KEY=${SMS_API_KEY:-}
+      - SMS_SENDER_ID=${SMS_SENDER_ID:-BTL-EMI}
+      - MAX_UPLOAD_SIZE_MB=50
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    volumes:
+      - uploads_data:/app/uploads
+      - ./logs:/app/logs
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_TARGET=/api
+    container_name: finance-frontend-prod
+    ports:
+      - "127.0.0.1:3000:5173"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+networks:
+  default:
+    name: finance-prod-network
+    driver: bridge

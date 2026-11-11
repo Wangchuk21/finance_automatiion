@@ -391,20 +391,47 @@ def validate_excel_import(
     return report
 
 
-def generate_preview_summary(rows: List[Dict[str, Any]], month_column_map: Dict[str, tuple]) -> Dict[str, Any]:
-    """Generate a preview summary for the upload confirmation step."""
+def generate_preview_summary(
+    rows: List[Dict[str, Any]],
+    month_column_map: Dict[str, tuple],
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Generate a preview summary for the upload confirmation step.
+
+    The monthly breakdown uses the scheduled due amount and the recorded
+    received amount (external + salary), never the raw month cell as "due".
+    Contract-level totals mirror the spreadsheet's derived columns.
+    """
     from collections import defaultdict
-    from datetime import date
     from decimal import Decimal
-    
+
+    from app.importer.derived import compute_contract_metrics_for_row
+
+    def _dec(value: Any) -> Decimal:
+        if value is None or value == "":
+            return Decimal("0")
+        if isinstance(value, Decimal):
+            return value
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return Decimal("0")
+
     stats = {
         "total_contracts": len(rows),
         "new_contracts": 0,  # Would need DB check
         "updated_contracts": 0,
         "monthly_breakdown": defaultdict(lambda: {"contracts": 0, "due": Decimal("0"), "received": Decimal("0")}),
         "status_changes": defaultdict(int),
+        "totals": {
+            "emi_received": Decimal("0"),
+            "emi_receivable": Decimal("0"),
+            "balance_due": Decimal("0"),
+            "overall_outstanding": Decimal("0"),
+            "advance": Decimal("0"),
+        },
     }
-    
+
     # If rows have installments (already parsed), use those
     if rows and "installments" in rows[0]:
         for contract in rows:
@@ -413,16 +440,20 @@ def generate_preview_summary(rows: List[Dict[str, Any]], month_column_map: Dict[
                 if not due_month:
                     continue
                 key = due_month.strftime("%Y-%m")
-                due = inst.get("external_amount") or inst.get("salary_amount") or Decimal("0")
-                received = inst.get("received_amount") or Decimal("0")
-                if not isinstance(due, Decimal):
-                    due = Decimal(str(due))
-                if not isinstance(received, Decimal):
-                    received = Decimal(str(received))
-                
+                due = _dec(inst.get("due_amount"))
+                received = _dec(inst.get("received_amount"))
+                if received == 0:
+                    received = _dec(inst.get("external_amount")) + _dec(
+                        inst.get("salary_amount")
+                    )
+
                 stats["monthly_breakdown"][key]["due"] += due
                 stats["monthly_breakdown"][key]["received"] += received
                 stats["monthly_breakdown"][key]["contracts"] += 1
+
+            metrics = compute_contract_metrics_for_row(contract, as_of=as_of)
+            for key in stats["totals"]:
+                stats["totals"][key] += getattr(metrics, key)
     else:
         # Fallback: use original rows and month_column_map
         for row in rows:
@@ -436,10 +467,12 @@ def generate_preview_summary(rows: List[Dict[str, Any]], month_column_map: Dict[
                             stats["monthly_breakdown"][key]["due"] += Decimal(str(parsed))
                         elif col_type == "received":
                             stats["monthly_breakdown"][key]["received"] += Decimal(str(parsed))
-    
+
     # Convert Decimal to Decimal-safe string for JSON
     for key in stats["monthly_breakdown"]:
         stats["monthly_breakdown"][key]["due"] = str(stats["monthly_breakdown"][key]["due"])
         stats["monthly_breakdown"][key]["received"] = str(stats["monthly_breakdown"][key]["received"])
-    
+    for key in stats["totals"]:
+        stats["totals"][key] = str(stats["totals"][key])
+
     return stats

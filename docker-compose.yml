@@ -1,4 +1,5 @@
-version: "3.8"
+# Development Docker Compose
+# Usage: docker compose up -d
 
 services:
   postgres:
@@ -12,27 +13,57 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-scripts:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d finance_automation"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: finance-automation-pgadmin
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: finance-automation-backend
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: "False"
+      - APP_NAME=Finance Automation
+      - APP_ENV=dev
+      - DEBUG=true
+      - LOG_LEVEL=info
+      - TEMP_CONFIRM_CODE=123456
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=finance_automation
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/finance_automation
+      - DATABASE_URL_SYNC=postgresql+psycopg2://postgres:postgres@postgres:5432/finance_automation
+      - SECRET_KEY=dev-secret-key-change-in-production-min-32-chars-long
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - UPLOAD_DIR=./uploads
+      - MAX_UPLOAD_SIZE_MB=50
+      - ANONYMIZATION_SALT=dev-anonymization-salt-change-in-production
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:5174
     ports:
-      - "5050:80"
-    depends_on:
-      - postgres
+      - "8001:8000"
     volumes:
-      - pgadmin_data:/var/lib/pgadmin
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/app/entrypoint.sh"]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: finance-automation-frontend
+    environment:
+      - VITE_API_TARGET=http://backend:8000
+    ports:
+      - "5174:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
 
 volumes:
   postgres_data:
-  pgadmin_data:

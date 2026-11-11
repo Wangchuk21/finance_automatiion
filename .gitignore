@@ -16,21 +16,25 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
 # Virtual environments
-.venv/
-venv/
+.venv
 env/
+venv/
 ENV/
+env.bak/
+venv.bak/
 
-# Environment files
+# Environment files (keep examples, ignore real secrets)
 .env
+.env.prod
 .env.local
-.env.*.local
 
 # IDE
 .idea/
@@ -44,55 +48,62 @@ ENV/
 Thumbs.db
 
 # Logs
-logs/
 *.log
+logs/
 
 # Database
-*.sqlite3
+*.sqlite
 *.db
 
 # Uploads
 uploads/
+
+# Data files (contain PII)
 *.xlsx
-*.xls
+!requirements*.xlsx
 
-# Test outputs
-anonymized_data/
-test_*.xlsx
-test_*.csv
-fake_contacts.csv
-debug_broken.py
-create_*.py
+# Docker
+.dockerignore
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/build/
-frontend/.vite/
-frontend/*.local
+# Production
+.env.prod
+ssl/
+backups/
+*.pem
+*.key
+*.crt
 
-# Coverage
-htmlcov/
+# Testing
 .coverage
-.coverage.*
-coverage.xml
-*.cover
-.hypothesis/
+htmlcov/
 .pytest_cache/
 .tox/
-.nox/
-.mypy_cache/
-.dmypy.json
-dmypy.json
+.coverage.*
+test_*.xlsx
 
-# Type checking
-*.pyi
-*.pyc*.sql
-*.xlsx
-*.xls
-*.csv
-.~lock.*
-backup_*
-anonymized_data/
-logs/
-.env
+# Build
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+frontend/dist/
+frontend/.vite/
+
+# Monitoring
+monitoring/prometheus_data/
+monitoring/grafana_data/
+
+# IDE specific
+*.swp
+*.swo
+
+# Secret files
+*.secret
+*.pem
+*.key
+*.crt

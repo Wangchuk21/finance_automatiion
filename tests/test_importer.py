@@ -29,6 +29,7 @@ from app.importer.column_map import (
 )
 from app.importer.validation import validate_excel_import, ValidationReport
 from app.importer.reader import read_excel_sheet, parse_sheet_to_contracts, import_excel_file, ParsedSheet
+from app.importer.derived import compute_contract_metrics
 
 
 class TestColumnMap:
@@ -955,6 +956,234 @@ class TestNoteCellHandling:
 
 
 # ---------------------------------------------------------------------------
+# Input-only headers + derived (calculated) columns
+# ---------------------------------------------------------------------------
+
+class TestDerivedColumns:
+    """Uploading only the input columns must still produce the derived values."""
+
+    def test_new_template_header_aliases(self):
+        assert get_canonical_column("Item Name") == "item"
+        assert get_canonical_column("CID/PASSPORT No/Work Permit") == "cid"
+        assert get_canonical_column("Mobile/Contact No") == "mobile"
+        # punctuation/spacing variants
+        assert get_canonical_column("CID / Passport No / Work Permit") == "cid"
+        assert get_canonical_column("Mobile / Contact No.") == "mobile"
+
+    def test_derived_metrics_fully_paid(self):
+        from datetime import date as _date
+        installments = [
+            {
+                "due_month": _date(2025, 2, 1),
+                "due_amount": Decimal("1870"),
+                "received_amount": Decimal("1870"),
+            }
+            for _ in range(20)
+        ]
+        m = compute_contract_metrics(
+            monthly_deduction=Decimal("1870"),
+            gst=None,
+            sales_amount=Decimal("44880"),
+            emi_months=20,
+            start_date=_date(2025, 2, 26),
+            as_of=_date(2026, 9, 30),
+            installments=installments,
+        )
+        assert m.no_of_ins_to_be_recd == 20
+        assert m.emi_receivable == Decimal("37400.00")
+        assert m.emi_received == Decimal("37400.00")
+        assert m.balance_due == Decimal("0.00")
+        assert m.advance == Decimal("0.00")
+        assert m.overall_outstanding == Decimal("7480.00")
+        assert m.no_on_inst_due == Decimal("0.00")
+        assert m.age_days == 0
+        assert m.alert == "Normal"
+        assert m.aging_bucket == "0-30"
+
+    def test_derived_metrics_partial_and_advance(self):
+        from datetime import date as _date
+        start = _date(2025, 1, 15)
+
+        partial = [
+            {"due_amount": Decimal("1000"), "received_amount": Decimal("1000")},
+            {"due_amount": Decimal("1000"), "received_amount": Decimal("1000")},
+            {"due_amount": Decimal("1000"), "received_amount": Decimal("1000")},
+            {"due_amount": Decimal("1000"), "received_amount": Decimal("0")},
+        ]
+        m = compute_contract_metrics(
+            monthly_deduction=Decimal("1000"),
+            gst=Decimal("0"),
+            sales_amount=Decimal("12000"),
+            emi_months=12,
+            start_date=start,
+            as_of=_date(2025, 4, 30),
+            installments=partial,
+        )
+        assert m.no_of_ins_to_be_recd == 4
+        assert m.emi_receivable == Decimal("4000.00")
+        assert m.balance_due == Decimal("1000.00")
+        assert m.no_on_inst_due == Decimal("1.00")
+        assert m.age_days == 30
+        assert m.alert == "Watch"
+        assert m.aging_bucket == "0-30"
+
+        overpaid = [
+            {"due_amount": Decimal("1000"), "received_amount": Decimal("2500")},
+        ]
+        m2 = compute_contract_metrics(
+            monthly_deduction=Decimal("1000"),
+            gst=Decimal("0"),
+            sales_amount=Decimal("12000"),
+            emi_months=12,
+            start_date=start,
+            as_of=_date(2025, 1, 31),
+            installments=overpaid,
+        )
+        assert m2.emi_receivable == Decimal("1000.00")
+        assert m2.advance == Decimal("1500.00")
+        assert m2.balance_due == Decimal("0.00")
+
+    def test_preview_summary_uses_scheduled_due_and_totals(self):
+        from datetime import date as _date
+        from app.importer.validation import generate_preview_summary
+
+        contracts = [{
+            "reference": "X1",
+            "start_date": _date(2025, 1, 1),
+            "emi_months": 2,
+            "monthly_deduction": Decimal("1000"),
+            "gst": Decimal("0"),
+            "sales_amount": Decimal("2500"),
+            "installments": [
+                {"due_month": _date(2025, 1, 1), "due_amount": Decimal("1000"),
+                 "received_amount": Decimal("1000")},
+                {"due_month": _date(2025, 2, 1), "due_amount": Decimal("1000"),
+                 "received_amount": Decimal("500")},
+            ],
+        }]
+        stats = generate_preview_summary(contracts, {}, as_of=_date(2025, 3, 1))
+
+        assert Decimal(stats["monthly_breakdown"]["2025-01"]["due"]) == Decimal("1000")
+        assert Decimal(stats["monthly_breakdown"]["2025-02"]["due"]) == Decimal("1000")
+        assert Decimal(stats["monthly_breakdown"]["2025-02"]["received"]) == Decimal("500")
+        assert Decimal(stats["totals"]["emi_received"]) == Decimal("1500")
+        assert Decimal(stats["totals"]["emi_receivable"]) == Decimal("2000")
+        assert Decimal(stats["totals"]["balance_due"]) == Decimal("500")
+        assert Decimal(stats["totals"]["overall_outstanding"]) == Decimal("1000")
+
+    def test_adding_next_month_column(self, tmp_path):
+        """Adding an Oct-26 pair must create/update installments without errors."""
+        from datetime import date as _date
+        from openpyxl import Workbook
+
+        headers = [
+            "Item Name", "Brand", "Reference", "CC", "Region", "Cost Center",
+            "Ministry/Agency", "Payment Type", "EMI Months", "Customer",
+            "CID/PASSPORT No/Work Permit", "Mobile/Contact No", "Posting Date",
+            "Month", "Year", "Ending Date", "Monthly Deduction", "Rate", "Data",
+            "Sales Amt", "Qty", "GST", "Deferred",
+            "Aug-26", "Salary Aug 26", "Sep-26", "Salary Sep 27",
+            "Oct-26", "Salary Oct 26",
+        ]
+
+        def make_row(ref, posting, ending, sep=None, oct_ext=None, oct_sal=None):
+            return [
+                "Phone", "Samsung", ref, "CC1", "Western Region", "CC1",
+                "MOESD", "Employee Installment", 2, "Test Customer",
+                "1122334455", "17123456", posting, None, None, ending,
+                1000, None, None, 2000, 1, 0, 1,
+                None, None, sep, None, oct_ext, oct_sal,
+            ]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(headers)
+        # P: Sep-26..Oct-26, October paid (inside schedule)
+        ws.append(make_row("TEST-OCT-IN", _date(2026, 9, 10), _date(2026, 10, 10),
+                           sep=1000, oct_ext=1000))
+        # Q: Aug-26..Sep-26, extra October salary payment (outside schedule)
+        ws.append(make_row("TEST-OCT-OUT", _date(2026, 8, 10), _date(2026, 9, 10),
+                           sep=1000, oct_sal=1000))
+        # R: Aug-26..Sep-26, no October payment (no outside row)
+        ws.append(make_row("TEST-OCT-NONE", _date(2026, 8, 10), _date(2026, 9, 10),
+                           sep=1000))
+
+        path = tmp_path / "second_month.xlsx"
+        wb.save(path)
+
+        contracts, report, preview = import_excel_file(
+            str(path), as_of=_date(2026, 10, 31)
+        )
+        assert report.error_count == 0
+        by_ref = {c["reference"]: c["installments"] for c in contracts}
+
+        inside = by_ref["TEST-OCT-IN"]
+        assert len(inside) == 2
+        assert inside[-1]["due_month"] == _date(2026, 10, 1)
+        assert inside[-1]["due_amount"] == Decimal("1000.00")
+        assert inside[-1]["external_amount"] == Decimal("1000")
+
+        outside = by_ref["TEST-OCT-OUT"]
+        assert len(outside) == 3
+        assert outside[-1]["due_month"] == _date(2026, 10, 1)
+        assert outside[-1]["due_amount"] is None
+        assert outside[-1]["salary_amount"] == Decimal("1000")
+
+        no_payment = by_ref["TEST-OCT-NONE"]
+        assert len(no_payment) == 2
+        assert all(i["due_month"] != _date(2026, 10, 1) for i in no_payment)
+
+        assert Decimal(preview["totals"]["emi_received"]) == Decimal("5000")
+        assert Decimal(preview["totals"]["emi_receivable"]) == Decimal("6000")
+        assert Decimal(preview["totals"]["balance_due"]) == Decimal("1000")
+        assert Decimal(preview["totals"]["overall_outstanding"]) == Decimal("1000")
+
+    def test_upload_without_derived_columns(self, tmp_path):
+        from datetime import date as _date
+        from openpyxl import Workbook
+
+        headers = [
+            "Item Name", "Brand", "Reference", "CC", "Region", "Cost Center",
+            "Ministry/Agency", "Payment Type", "EMI Months", "Customer",
+            "CID/PASSPORT No/Work Permit", "Mobile/Contact No", "Posting Date",
+            "Month", "Year", "Ending Date", "Monthly Deduction", "Rate", "Data",
+            "Sales Amt", "Qty", "GST", "Deferred",
+            "Feb-25", "Salary Feb", "Mar-25", "Salary Mar",
+        ]
+        row = [
+            "Laptop", "Dell", "TEST-INT-1", "CC1", "Western Region", "CC1",
+            "MOESD", "Employee Installment", 2, "Test Employee",
+            "1122334455", "17123456", _date(2025, 2, 10),
+            2, 2025, _date(2025, 3, 10), 1000, None, None,
+            2400, 1, 0, 1,
+            None, 1000, None, 1000,
+        ]
+        wb = Workbook()
+        ws = wb.active
+        ws.append(headers)
+        ws.append(row)
+        path = tmp_path / "input_only.xlsx"
+        wb.save(path)
+
+        contracts, report, preview = import_excel_file(
+            str(path), as_of=_date(2026, 9, 30)
+        )
+        assert not report.has_errors
+        assert len(contracts) == 1
+        c = contracts[0]
+        assert c["item"] == "Laptop"
+        assert c["cid"] == "1122334455"
+        assert c["mobile"] == "17123456"
+        assert c["reference"] == "TEST-INT-1"
+        assert len(c["installments"]) == 2
+
+        assert Decimal(preview["totals"]["emi_received"]) == Decimal("2000")
+        assert Decimal(preview["totals"]["emi_receivable"]) == Decimal("2000")
+        assert Decimal(preview["totals"]["balance_due"]) == Decimal("0")
+        assert Decimal(preview["totals"]["overall_outstanding"]) == Decimal("400")
+
+
+# ---------------------------------------------------------------------------
 # as_of_date schema validator tests
 # ---------------------------------------------------------------------------
 
@@ -1149,6 +1378,215 @@ async def _run_db_write_test():
         )
         assert blk_rows[0].cell_status == "not_received"
         assert blk_rows[0].received_amount == Decimal("0.00")
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_contract_schedule_inside_outside_and_db():
+    """
+    Test contract schedule:
+    - Contract A: posted mid-range (starts Mar 25, ends May 25, EMI 3) -> 3 rows, all due_amount populated.
+    - Contract B: ending before last sheet month (starts Jan 25, ends Mar 25, EMI 3) -> 3 rows, all due_amount populated.
+    - Contract C: with payment cell before its start month (starts Mar 25, payment in Feb 25) -> 4 rows,
+      Feb 25 has due_amount = NULL, and C's payment is kept.
+    - Schedule length mismatch warning test (reference + row only, no personal values).
+    - Inserted into finance_test (never finance_automation).
+    """
+    from app.importer.reader import ParsedSheet, parse_sheet_to_contracts
+    from app.importer.service import upsert_contracts
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.models import Base, Contract, Installment
+    from decimal import Decimal
+    from datetime import date
+
+    TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/finance_test"
+    assert "finance_test" in TEST_DB_URL
+    assert "finance_automation" not in TEST_DB_URL
+
+    # Define 5 sheet months: Jan 2025 .. May 2025
+    month_columns = {
+        "Salary Jan 25": ("salary", 1, 2025),
+        "Salary Feb 25": ("salary", 2, 2025),
+        "Salary Mar 25": ("salary", 3, 2025),
+        "Salary Apr 25": ("salary", 4, 2025),
+        "Salary May 25": ("salary", 5, 2025),
+    }
+    static_columns = {
+        "Reference": "reference",
+        "Payment Type": "payment_type",
+        "Posting Date": "start_date",
+        "Ending Date": "end_date",
+        "EMI Months": "emi_months",
+        "Monthly Deduction": "monthly_deduction",
+        "GST": "gst",
+    }
+
+    # Contract A: posted mid-range (starts Mar 25, ends May 25, EMI 3)
+    # Sheet has Jan..May (5 months). Jan, Feb are before start month and blank -> omitted.
+    # Mar, Apr, May inside schedule -> 3 rows.
+    row_a = {
+        "Reference": "CTR-A",
+        "Payment Type": "salary",
+        "Posting Date": "2025-03-01",
+        "Ending Date": "2025-05-01",
+        "EMI Months": "3",
+        "Monthly Deduction": "5000.00",
+        "GST": "900.00",
+        "Salary Jan 25": None,
+        "Salary Feb 25": None,
+        "Salary Mar 25": "5900.00",
+        "Salary Apr 25": "5000.00",
+        "Salary May 25": "5000.00",
+    }
+
+    # Contract B: ending before last sheet month (starts Jan 25, ends Mar 25, EMI 3)
+    # Sheet has Jan..May (5 months). Jan, Feb, Mar inside schedule -> 3 rows.
+    # Apr, May after end month and blank -> omitted.
+    row_b = {
+        "Reference": "CTR-B",
+        "Payment Type": "salary",
+        "Posting Date": "2025-01-01",
+        "Ending Date": "2025-03-01",
+        "EMI Months": "3",
+        "Monthly Deduction": "3000.00",
+        "GST": "600.00",
+        "Salary Jan 25": "3600.00",
+        "Salary Feb 25": "3000.00",
+        "Salary Mar 25": "3000.00",
+        "Salary Apr 25": None,
+        "Salary May 25": None,
+    }
+
+    # Contract C: with payment cell before its start month (starts Mar 25, ends May 25, EMI 3)
+    # Jan is blank -> omitted. Feb has payment (4500) before start month -> created with due_amount=NULL!
+    # Mar, Apr, May inside schedule -> 4 rows total.
+    row_c = {
+        "Reference": "CTR-C",
+        "Payment Type": "salary",
+        "Posting Date": "2025-03-01",
+        "Ending Date": "2025-05-01",
+        "EMI Months": "3",
+        "Monthly Deduction": "4000.00",
+        "GST": "500.00",
+        "Salary Jan 25": None,
+        "Salary Feb 25": "4500.00",
+        "Salary Mar 25": "4500.00",
+        "Salary Apr 25": "4000.00",
+        "Salary May 25": "4000.00",
+    }
+
+    # Contract D: schedule length mismatch (starts Jan 25, ends Apr 25 = 4 months, but EMI months = 3)
+    row_d = {
+        "Reference": "CTR-D",
+        "Payment Type": "salary",
+        "Posting Date": "2025-01-01",
+        "Ending Date": "2025-04-01",
+        "EMI Months": "3",
+        "Monthly Deduction": "2000.00",
+        "GST": "300.00",
+        "Salary Jan 25": "2300.00",
+        "Salary Feb 25": "2000.00",
+        "Salary Mar 25": "2000.00",
+        "Salary Apr 25": "2000.00",
+        "Salary May 25": None,
+    }
+
+    parsed = ParsedSheet(
+        sheet_name="ScheduleTest",
+        headers=list(row_a.keys()),
+        rows=[row_a, row_b, row_c, row_d],
+        month_columns=month_columns,
+        static_columns=static_columns,
+    )
+
+    contracts = parse_sheet_to_contracts(parsed)
+    assert len(contracts) == 4
+
+    contract_a = next(c for c in contracts if c["reference"] == "CTR-A")
+    contract_b = next(c for c in contracts if c["reference"] == "CTR-B")
+    contract_c = next(c for c in contracts if c["reference"] == "CTR-C")
+    contract_d = next(c for c in contracts if c["reference"] == "CTR-D")
+
+    # Assert row counts from parsing
+    assert len(contract_a["installments"]) == 3
+    assert len(contract_b["installments"]) == 3
+    assert len(contract_c["installments"]) == 4
+
+    # Assert schedule length mismatch warning for D (reference + row only, no personal values)
+    assert "schedule_warning" in contract_d
+    assert "CTR-D" in contract_d["schedule_warning"]
+    assert "schedule length (4) differs from EMI months (3)" in contract_d["schedule_warning"]
+
+    # Database testing in finance_test
+    engine = create_async_engine(TEST_DB_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as s, s.begin():
+        await upsert_contracts(s, [contract_a, contract_b, contract_c], upload_id=1)
+        await s.flush()
+
+        # Query and assert Contract A: 3 rows, all due_amount populated
+        rows_a = sorted(
+            (await s.execute(
+                select(Installment)
+                .join(Contract, Contract.id == Installment.contract_id)
+                .where(Contract.reference == "CTR-A")
+            )).scalars().all(),
+            key=lambda r: r.due_month,
+        )
+        assert len(rows_a) == 3
+        assert [r.due_month for r in rows_a] == [date(2025, 3, 1), date(2025, 4, 1), date(2025, 5, 1)]
+        assert rows_a[0].due_amount == Decimal("5900.00")  # first month: deduction + GST
+        assert rows_a[1].due_amount == Decimal("5000.00")
+        assert rows_a[2].due_amount == Decimal("5000.00")
+        assert all(r.due_amount is not None for r in rows_a)
+
+        # Query and assert Contract B: 3 rows, all due_amount populated
+        rows_b = sorted(
+            (await s.execute(
+                select(Installment)
+                .join(Contract, Contract.id == Installment.contract_id)
+                .where(Contract.reference == "CTR-B")
+            )).scalars().all(),
+            key=lambda r: r.due_month,
+        )
+        assert len(rows_b) == 3
+        assert [r.due_month for r in rows_b] == [date(2025, 1, 1), date(2025, 2, 1), date(2025, 3, 1)]
+        assert rows_b[0].due_amount == Decimal("3600.00")  # first month: deduction + GST
+        assert rows_b[1].due_amount == Decimal("3000.00")
+        assert rows_b[2].due_amount == Decimal("3000.00")
+        assert all(r.due_amount is not None for r in rows_b)
+
+        # Query and assert Contract C: 4 rows, NULL due_amount outside schedule, payment kept
+        rows_c = sorted(
+            (await s.execute(
+                select(Installment)
+                .join(Contract, Contract.id == Installment.contract_id)
+                .where(Contract.reference == "CTR-C")
+            )).scalars().all(),
+            key=lambda r: r.due_month,
+        )
+        assert len(rows_c) == 4
+        assert [r.due_month for r in rows_c] == [
+            date(2025, 2, 1), date(2025, 3, 1), date(2025, 4, 1), date(2025, 5, 1)
+        ]
+        # Feb 2025 is outside schedule -> due_amount must be NULL (None)
+        assert rows_c[0].due_amount is None
+        # C's payment is kept in Feb 2025
+        assert rows_c[0].salary_amount == Decimal("4500.00")
+        assert rows_c[0].received_amount == Decimal("4500.00")
+
+        # Mar, Apr, May are inside schedule -> due_amount is populated
+        assert rows_c[1].due_amount == Decimal("4500.00")  # first schedule month: 4000 + 500 GST
+        assert rows_c[2].due_amount == Decimal("4000.00")
+        assert rows_c[3].due_amount == Decimal("4000.00")
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

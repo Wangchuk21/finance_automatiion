@@ -1,9 +1,10 @@
 """SQLAlchemy models for all tables."""
 
 import enum
+import json
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy import (
     BigInteger,
@@ -68,7 +69,7 @@ class Contract(Base):
     emi_months: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     customer: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     cid: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
-    mobile: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    mobile: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
 
     # Dates
     contract_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -392,9 +393,10 @@ class Notification(Base):
 import enum
 
 class UserRole(str, enum.Enum):
-    SUPER_ADMIN = "super_admin"
+    """User role enumeration."""
+
     ADMIN = "admin"
-    UPLOADER = "uploader"
+    FINANCE_UPLOADER = "finance_uploader"
     VIEWER = "viewer"
 
 
@@ -407,14 +409,28 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     full_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
-    is_superuser: Mapped[bool] = mapped_column(default=False, nullable=False)
-    role: Mapped[UserRole] = mapped_column(
-        Enum(UserRole, native_enum=False), default=UserRole.VIEWER, nullable=False
+    role: Mapped[str] = mapped_column(
+        String(20), default=UserRole.VIEWER.value, nullable=False
     )
 
-    # TOTP fields
+    # Password change enforcement
+    must_change_password: Mapped[bool] = mapped_column(default=True, nullable=False)
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_history: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of last 3 hashes
+
+    # Token version for invalidation
+    token_version: Mapped[int] = mapped_column(default=1, nullable=False)
+
+    # Account lockout
+    failed_login_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Temporary password expiry
+    temp_password_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # TOTP fields (for upload confirmation)
     totp_secret: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     totp_recovery_codes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
@@ -436,10 +452,47 @@ class User(Base):
 
     __table_args__ = (
         Index("ix_users_email_active", "email", "is_active"),
+        CheckConstraint("role IN ('admin', 'finance_uploader', 'viewer')", name="ck_users_role"),
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    uploads: Mapped[list["Upload"]] = relationship("Upload", back_populates="uploader")
+    closures: Mapped[list["ContractClosure"]] = relationship("ContractClosure", back_populates="closer")
+
+    __table_args__ = (
+        Index("ix_users_email_active", "email", "is_active"),
     )
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username='{self.username}', role='{self.role}')>"
+
+    @property
+    def password_history_list(self) -> List[str]:
+        """Get password history as list of hashes."""
+        if not self.password_history:
+            return []
+        try:
+            return json.loads(self.password_history)
+        except Exception:
+            return []
+
+    def add_password_to_history(self, password_hash: str) -> None:
+        """Add a password hash to history, keeping only last 3."""
+        history = self.password_history_list
+        # Include current password in history (so total = current + last 3 = 4)
+        if self.password_hash and self.password_hash not in history:
+            history.insert(0, self.password_hash)
+        history.insert(0, password_hash)
+        self.password_history = json.dumps(history[:4])  # Keep current + last 3
 
 
 class AuditLog(Base):

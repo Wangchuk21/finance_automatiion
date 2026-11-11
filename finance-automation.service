@@ -1,0 +1,28 @@
+# Finance Automation - Systemd Service
+# Install: sudo cp finance-automation.service /etc/systemd/system/
+# Enable:  sudo systemctl enable finance-automation
+# Start:   sudo systemctl start finance-automation
+# Logs:    sudo journalctl -u finance-automation -f
+
+[Unit]
+Description=Finance Automation Application
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/finance-automation
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env.prod down
+ExecReload=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env.prod restart
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+# Restart policy
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

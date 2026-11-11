@@ -16,14 +16,15 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.confirm import verify_confirm_code
 from app.db.session import get_session
-from app.importer.reader import import_excel_file, calculate_file_checksum
-from app.importer.service import upsert_contracts, rollback_upload
+from app.importer.reader import import_excel_file, calculate_file_checksum, UploadType
+from app.importer.service import upsert_contracts, rollback_upload, upsert_customers, upsert_payments
 from app.importer.comparison import compare_uploads, get_last_confirmed_upload, validate_upload_rules
-from app.models import Upload, UploadStatus, User
+from app.models import Upload, UploadStatus, User, UserRole
 from app.schemas.uploads import (
     UploadCreate,
     UploadResponse,
@@ -34,34 +35,19 @@ from app.schemas.uploads import (
     ComparisonPreviewResponse,
     MissingContractActionRequest,
     MissingContractActionResponse,
+    CustomerUploadCreate,
+    CustomerUploadPreviewResponse,
+    CustomerUploadResponse,
+    CustomerUploadConfirmRequest,
+    PaymentUploadCreate,
+    PaymentUploadPreviewResponse,
+    PaymentUploadResponse,
+    PaymentUploadConfirmRequest,
     _parse_as_of_date,
 )
 
 router = APIRouter(tags=["uploads"])
 logger = get_logger(__name__)
-
-# Placeholder for auth dependency
-async def get_current_user() -> User:
-    """Placeholder for current user dependency."""
-    # TODO: Implement actual auth
-    from sqlalchemy import select
-    from app.db.session import async_session_maker
-    
-    async with async_session_maker() as session:
-        result = await session.execute(select(User).limit(1))
-        user = result.scalar_one_or_none()
-        if not user:
-            # Create a default user for development
-            user = User(
-                username="admin",
-                email="admin@example.com",
-                hashed_password="dev",
-                role="admin",
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-        return user
 
 # Ensure upload directory exists
 UPLOAD_DIR = Path(settings.UPLOAD_DIR)
@@ -93,7 +79,7 @@ async def create_upload(
     sheet_name: Optional[str] = Form(None),
     header_row: Optional[int] = Form(None),
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user),  # TODO: implement auth
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
 ):
     """
     Step 1: Upload file and parse.
@@ -159,6 +145,7 @@ async def create_upload(
             str(temp_path),
             sheet_name=sheet_name,
             header_row=header_row,
+            as_of=as_of_date_parsed,
         )
 
         # Convert defaultdict to dict for JSON serialization
@@ -205,6 +192,7 @@ async def create_upload(
                 contracts_count=len(contracts),
                 validation_report=report.to_dict(),
                 monthly_breakdown=preview.get("monthly_breakdown", {}),
+                totals=preview.get("totals"),
             ),
         )
 
@@ -245,6 +233,7 @@ async def get_upload_preview(
         contracts_count=summary.get("contracts_count", 0),
         validation_report=validation_report,
         monthly_breakdown=summary.get("monthly_breakdown", {}),
+        totals=summary.get("totals"),
     )
 
 
@@ -310,7 +299,7 @@ async def handle_missing_contracts(
     upload_id: int,
     request: MissingContractActionRequest,
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
 ):
     """Handle missing contract actions: close, keep active, or decide later."""
     from app.models import ContractClosure, ContractState
@@ -335,7 +324,7 @@ async def handle_missing_contracts(
     if not temp_file or not os.path.exists(temp_file):
         raise HTTPException(400, "Temporary file not found, please re-upload")
     
-    contracts, report, preview = import_excel_file(temp_file)
+    contracts, report, preview = import_excel_file(temp_file, as_of=upload.as_of_date)
     
     # Get previous upload for comparison
     from app.importer.comparison import compare_uploads, get_last_confirmed_upload
@@ -434,7 +423,7 @@ async def confirm_upload(
     upload_id: int,
     request: UploadConfirmRequest,
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user),  # TODO: implement auth
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
 ):
     """
     Step 4: Confirm upload and persist to database.
@@ -468,7 +457,7 @@ async def confirm_upload(
         raise HTTPException(400, "Temporary file not found, please re-upload")
     
     try:
-        contracts, report, preview = import_excel_file(temp_file)
+        contracts, report, preview = import_excel_file(temp_file, as_of=upload.as_of_date)
         
         if report.has_errors:
             raise HTTPException(
@@ -532,7 +521,7 @@ async def rollback_upload_endpoint(
     upload_id: int,
     request: UploadRollbackRequest,
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
 ):
     """
     Rollback a confirmed upload.
@@ -565,6 +554,507 @@ async def rollback_upload_endpoint(
         )
     else:
         raise HTTPException(500, "Rollback failed")
+
+
+@router.delete("/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_upload(
+    upload_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
+):
+    """Delete an upload record and its temp file so it can be re-uploaded."""
+    upload = await session.get(Upload, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    # Remove the temp file if it still exists
+    summary = json.loads(upload.summary) if upload.summary else {}
+    temp_file = summary.get("temp_file")
+    if temp_file and os.path.exists(temp_file):
+        try:
+            os.unlink(temp_file)
+        except OSError:
+            logger.warning("Could not delete temp file: %s", temp_file)
+
+    await session.delete(upload)
+    await session.commit()
+    return None
+
+
+# ============================================================================
+# Customer Upload Endpoints
+# ============================================================================
+
+@router.post("/customers", response_model=CustomerUploadResponse, status_code=status.HTTP_201_CREATED)
+async def create_customer_upload(
+    file: UploadFile = File(...),
+    as_of_date: str = Form(...),
+    sheet_name: Optional[str] = Form(None),
+    header_row: Optional[int] = Form(None),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
+):
+    """
+    Step 1: Upload customer file and parse.
+    Returns validation report and preview for customer/contract data.
+    """
+    try:
+        as_of_date_parsed: date = _parse_as_of_date(as_of_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    # Validate file type
+    allowed_extensions = {".xlsx", ".xls"}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+
+    # Validate file size
+    file_content = await file.read()
+    if len(file_content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Max size: {settings.MAX_UPLOAD_SIZE_MB}MB"
+        )
+
+    # Calculate checksum
+    checksum = calculate_file_checksum_from_bytes(file_content)
+
+    # Check for duplicate
+    existing = await session.execute(
+        select(Upload).where(Upload.checksum == checksum)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="File with identical content already uploaded"
+        )
+
+    # Save file temporarily
+    temp_path = UPLOAD_DIR / f"temp_cust_{checksum}{file_ext}"
+    with open(temp_path, "wb") as f:
+        f.write(file_content)
+
+    try:
+        # Parse and validate with CUSTOMER upload type
+        contracts, report, preview = import_excel_file(
+            str(temp_path),
+            sheet_name=sheet_name,
+            header_row=header_row,
+            as_of=as_of_date_parsed,
+            upload_type=UploadType.CUSTOMER,
+        )
+
+        # Convert defaultdict to dict for JSON serialization
+        clean_preview = _convert_defaultdict_to_dict(preview)
+
+        # Save upload record
+        try:
+            upload = Upload(
+                file_name=file.filename,
+                checksum=checksum,
+                uploaded_by=current_user.id,
+                as_of_date=as_of_date_parsed,
+                status=UploadStatus.PENDING,
+                summary=_serialize_summary(clean_preview),
+            )
+            session.add(upload)
+            await session.flush()
+
+            upload.summary = _serialize_summary({
+                **clean_preview,
+                "validation_report": report.to_dict(),
+                "contracts_count": len(contracts),
+                "temp_file": str(temp_path),
+                "upload_type": "customer",
+            })
+            await session.commit()
+        except Exception as db_exc:
+            logger.error("DB error saving customer upload record", exc_info=True)
+            await session.rollback()
+            if temp_path.exists():
+                temp_path.unlink()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not save the upload record."
+            )
+
+        return CustomerUploadResponse(
+            id=upload.id,
+            file_name=upload.file_name,
+            status=upload.status,
+            as_of_date=upload.as_of_date,
+            uploaded_at=upload.upload_time,
+            preview=CustomerUploadPreviewResponse(
+                id=upload.id,
+                contracts_count=len(contracts),
+                validation_report=report.to_dict(),
+                new_customers=preview.get("new_customers", 0),
+                updated_customers=preview.get("updated_customers", 0),
+                customers_with_errors=preview.get("customers_with_errors", 0),
+            ),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error parsing customer upload file", exc_info=True)
+        if temp_path.exists():
+            temp_path.unlink()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not parse the uploaded file. Check that it is a valid Excel sheet."
+        )
+
+
+@router.get("/customers/{upload_id}/preview", response_model=CustomerUploadPreviewResponse)
+async def get_customer_upload_preview(
+    upload_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get validation report and preview for customer upload confirmation."""
+    upload = await session.get(Upload, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    if upload.status != UploadStatus.PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload already {upload.status.value}"
+        )
+
+    summary = json.loads(upload.summary) if upload.summary else {}
+    validation_report = summary.get("validation_report", {})
+
+    return CustomerUploadPreviewResponse(
+        id=upload.id,
+        contracts_count=summary.get("contracts_count", 0),
+        validation_report=validation_report,
+        new_customers=summary.get("new_customers", 0),
+        updated_customers=summary.get("updated_customers", 0),
+        customers_with_errors=summary.get("customers_with_errors", 0),
+    )
+
+
+@router.post("/customers/{upload_id}/confirm", response_model=UploadStatusResponse)
+async def confirm_customer_upload(
+    upload_id: int,
+    request: CustomerUploadConfirmRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
+):
+    """
+    Confirm customer upload and persist to database.
+    """
+    # Verify confirmation code
+    await verify_confirm_code(
+        code=request.get_code(),
+        action="confirm_customer_upload",
+        entity_id=str(upload_id),
+        entity_type="upload",
+        session=session,
+    )
+
+    upload = await session.get(Upload, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    if upload.status != UploadStatus.PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload already {upload.status.value}"
+        )
+
+    summary = json.loads(upload.summary) if upload.summary else {}
+    temp_file = summary.get("temp_file")
+    if not temp_file or not os.path.exists(temp_file):
+        raise HTTPException(400, "Temporary file not found, please re-upload")
+
+    try:
+        contracts, report, preview = import_excel_file(
+            temp_file,
+            as_of=upload.as_of_date,
+            upload_type=UploadType.CUSTOMER,
+        )
+
+        if report.has_errors:
+            raise HTTPException(
+                status_code=400,
+                detail="Validation errors found. Cannot confirm."
+            )
+
+        # Upsert customers to database
+        from app.importer.service import upsert_customers
+        result = await upsert_customers(session, contracts, upload.id)
+
+        # Update upload status
+        upload.status = UploadStatus.CONFIRMED
+        upload.summary = _serialize_summary({
+            **preview,
+            "upsert_result": {
+                "customers_created": result.contracts_created,
+                "customers_updated": result.contracts_updated,
+            },
+        })
+        await session.commit()
+
+        # Cleanup temp file
+        os.unlink(summary.get("temp_file", ""))
+
+        return UploadStatusResponse(
+            id=upload.id,
+            status=upload.status,
+            message=f"Customer upload confirmed: {result.contracts_created} created, {result.contracts_updated} updated",
+            details=json.loads(upload.summary) if upload.summary else {},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming customer upload: {e}")
+        raise HTTPException(500, f"Failed to confirm customer upload: {str(e)}")
+
+
+# ============================================================================
+# Payment Upload Endpoints
+# ============================================================================
+
+@router.post("/payments", response_model=PaymentUploadResponse, status_code=status.HTTP_201_CREATED)
+async def create_payment_upload(
+    file: UploadFile = File(...),
+    as_of_date: str = Form(...),
+    sheet_name: Optional[str] = Form(None),
+    header_row: Optional[int] = Form(None),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
+):
+    """
+    Step 1: Upload payment file and parse.
+    Returns validation report and preview for payment/installment data.
+    """
+    try:
+        as_of_date_parsed: date = _parse_as_of_date(as_of_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    # Validate file type
+    allowed_extensions = {".xlsx", ".xls"}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+
+    # Validate file size
+    file_content = await file.read()
+    if len(file_content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Max size: {settings.MAX_UPLOAD_SIZE_MB}MB"
+        )
+
+    # Calculate checksum
+    checksum = calculate_file_checksum_from_bytes(file_content)
+
+    # Check for duplicate
+    existing = await session.execute(
+        select(Upload).where(Upload.checksum == checksum)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="File with identical content already uploaded"
+        )
+
+    # Save file temporarily
+    temp_path = UPLOAD_DIR / f"temp_pay_{checksum}{file_ext}"
+    with open(temp_path, "wb") as f:
+        f.write(file_content)
+
+    try:
+        # Parse and validate with PAYMENT upload type
+        contracts, report, preview = import_excel_file(
+            str(temp_path),
+            sheet_name=sheet_name,
+            header_row=header_row,
+            as_of=as_of_date_parsed,
+            upload_type=UploadType.PAYMENT,
+        )
+
+        # Convert defaultdict to dict for JSON serialization
+        clean_preview = _convert_defaultdict_to_dict(preview)
+
+        # Save upload record
+        try:
+            upload = Upload(
+                file_name=file.filename,
+                checksum=checksum,
+                uploaded_by=current_user.id,
+                as_of_date=as_of_date_parsed,
+                status=UploadStatus.PENDING,
+                summary=_serialize_summary(clean_preview),
+            )
+            session.add(upload)
+            await session.flush()
+
+            upload.summary = _serialize_summary({
+                **clean_preview,
+                "validation_report": report.to_dict(),
+                "contracts_count": len(contracts),
+                "temp_file": str(temp_path),
+                "upload_type": "payment",
+            })
+            await session.commit()
+        except Exception as db_exc:
+            logger.error("DB error saving payment upload record", exc_info=True)
+            await session.rollback()
+            if temp_path.exists():
+                temp_path.unlink()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not save the upload record."
+            )
+
+        return PaymentUploadResponse(
+            id=upload.id,
+            file_name=upload.file_name,
+            status=upload.status,
+            as_of_date=upload.as_of_date,
+            uploaded_at=upload.upload_time,
+            preview=PaymentUploadPreviewResponse(
+                id=upload.id,
+                contracts_count=len(contracts),
+                validation_report=report.to_dict(),
+                monthly_breakdown=preview.get("monthly_breakdown", {}),
+                totals=preview.get("totals"),
+                payments_updated=preview.get("payments_updated", 0),
+                payments_new=preview.get("payments_new", 0),
+            ),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error parsing payment upload file", exc_info=True)
+        if temp_path.exists():
+            temp_path.unlink()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not parse the uploaded file. Check that it is a valid Excel sheet."
+        )
+
+
+@router.get("/payments/{upload_id}/preview", response_model=PaymentUploadPreviewResponse)
+async def get_payment_upload_preview(
+    upload_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get validation report and preview for payment upload confirmation."""
+    upload = await session.get(Upload, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    if upload.status != UploadStatus.PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload already {upload.status.value}"
+        )
+
+    summary = json.loads(upload.summary) if upload.summary else {}
+    validation_report = summary.get("validation_report", {})
+
+    return PaymentUploadPreviewResponse(
+        id=upload.id,
+        contracts_count=summary.get("contracts_count", 0),
+        validation_report=validation_report,
+        monthly_breakdown=summary.get("monthly_breakdown", {}),
+        totals=summary.get("totals"),
+        payments_updated=summary.get("payments_updated", 0),
+        payments_new=summary.get("payments_new", 0),
+    )
+
+
+@router.post("/payments/{upload_id}/confirm", response_model=UploadStatusResponse)
+async def confirm_payment_upload(
+    upload_id: int,
+    request: PaymentUploadConfirmRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
+):
+    """
+    Confirm payment upload and persist to database.
+    """
+    # Verify confirmation code
+    await verify_confirm_code(
+        code=request.get_code(),
+        action="confirm_payment_upload",
+        entity_id=str(upload_id),
+        entity_type="upload",
+        session=session,
+    )
+
+    upload = await session.get(Upload, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    if upload.status != UploadStatus.PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload already {upload.status.value}"
+        )
+
+    summary = json.loads(upload.summary) if upload.summary else {}
+    temp_file = summary.get("temp_file")
+    if not temp_file or not os.path.exists(temp_file):
+        raise HTTPException(400, "Temporary file not found, please re-upload")
+
+    try:
+        contracts, report, preview = import_excel_file(
+            temp_file,
+            as_of=upload.as_of_date,
+            upload_type=UploadType.PAYMENT,
+        )
+
+        if report.has_errors:
+            raise HTTPException(
+                status_code=400,
+                detail="Validation errors found. Cannot confirm."
+            )
+
+        # Upsert payments to database
+        from app.importer.service import upsert_payments
+        result = await upsert_payments(session, contracts, upload.id)
+
+        # Update upload status
+        upload.status = UploadStatus.CONFIRMED
+        upload.summary = _serialize_summary({
+            **preview,
+            "upsert_result": {
+                "payments_updated": result.installments_updated,
+                "payments_new": result.installments_created,
+            },
+        })
+        await session.commit()
+
+        # Cleanup temp file
+        os.unlink(summary.get("temp_file", ""))
+
+        return UploadStatusResponse(
+            id=upload.id,
+            status=upload.status,
+            message=f"Payment upload confirmed: {result.installments_created} new, {result.installments_updated} updated",
+            details=json.loads(upload.summary) if upload.summary else {},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming payment upload: {e}")
+        raise HTTPException(500, f"Failed to confirm payment upload: {str(e)}")
 
 
 @router.get("", response_model=List[UploadResponse])

@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
@@ -9,8 +8,8 @@ import {
   Upload,
   Settings,
   BarChart2,
+  Bell,
   Menu,
-  X,
   ChevronLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +19,7 @@ const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Reports", href: "/reports", icon: BarChart2 },
   { name: "Contracts", href: "/contracts", icon: FileText },
+  { name: "Reminders", href: "/reminders", icon: Bell },
   { name: "Uploads", href: "/uploads", icon: Upload },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
@@ -62,7 +62,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             {navigation.map((item) => {
               const isActive = location.pathname === item.href || (item.href !== "/" && location.pathname.startsWith(item.href));
               return (
-                <Tooltip key={item.name} disabled={!collapsed}>
+                <Tooltip key={item.name} open={collapsed ? undefined : false}>
                   <TooltipTrigger asChild>
                     <Link
                       to={item.href}

@@ -1,8 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { Search, Bell, User, LogOut, Calendar } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useNavigate } from "react-router-dom";
+import { Search, User, LogOut, Calendar, KeyRound } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
+import { ChangePasswordDialog } from "@/components/auth/ChangePasswordDialog";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -20,8 +23,19 @@ interface HeaderProps {
   onAsOfDateChange?: (date: string) => void;
 }
 
-export function Header({ onMenuClick, asOfDate, onAsOfDateChange }: HeaderProps) {
+export function Header({ onMenuClick, asOfDate }: HeaderProps) {
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
+  const handleSignOut = async () => {
+    try {
+      await logout();
+    } finally {
+      navigate("/login", { replace: true });
+    }
+  };
 
   return (
     <header className="sticky top-0 z-30 h-16 border-b border-border bg-card/80 backdrop-blur-sm">
@@ -66,16 +80,7 @@ export function Header({ onMenuClick, asOfDate, onAsOfDateChange }: HeaderProps)
           </TooltipProvider>
 
           {/* Notifications */}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label="Notifications">
-                  <Bell className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Notifications</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <NotificationBell />
 
           {/* User Menu */}
           <DropdownMenu>
@@ -88,22 +93,34 @@ export function Header({ onMenuClick, asOfDate, onAsOfDateChange }: HeaderProps)
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem className="px-2 py-1 text-sm font-medium text-text-secondary">
-                Admin User
+                {user?.full_name || user?.username || "User"}
               </DropdownMenuItem>
               <DropdownMenuItem className="px-2 py-1 text-sm text-text-secondary">
-                admin@example.com
+                {user?.email || ""}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="px-2 py-1 text-sm">Profile</DropdownMenuItem>
-              <DropdownMenuItem className="px-2 py-1 text-sm">Settings</DropdownMenuItem>
+              <DropdownMenuItem className="px-2 py-1 text-sm" onClick={() => navigate("/settings")}>
+                Profile
+              </DropdownMenuItem>
+              <DropdownMenuItem className="px-2 py-1 text-sm" onClick={() => navigate("/settings")}>
+                Settings
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="px-2 py-1 text-sm"
+                onSelect={() => setChangePasswordOpen(true)}
+              >
+                <KeyRound className="mr-2 h-4 w-4" /> Change password
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="px-2 py-1 text-sm text-critical" onClick={() => {}}>
+              <DropdownMenuItem className="px-2 py-1 text-sm text-critical" onClick={handleSignOut}>
                 <LogOut className="mr-2 h-4 w-4" /> Sign out
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </div>
+
+      <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
     </header>
   );
 }

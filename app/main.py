@@ -30,12 +30,17 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.DEBUG,
     lifespan=lifespan,
+    redirect_slashes=False,
+    # Disable interactive docs in production (still available at /docs in dev)
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.DEBUG else ["https://yourdomain.com"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,11 +68,10 @@ async def root():
 
 
 # Import and include routers
-from app.api import contracts, dashboard, uploads
+from app.api import auth, contracts, credit_check, dashboard, notifications, uploads
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(dashboard.router, prefix="/api/v1", tags=["dashboard"])
 app.include_router(uploads.router, prefix="/api/v1/uploads", tags=["uploads"])
 app.include_router(contracts.router, prefix="/api/v1/contracts", tags=["contracts"])
-# app.include_router(installments.router, prefix="/api/v1/installments", tags=["installments"])
-# app.include_router(contacts.router, prefix="/api/v1/contacts", tags=["contacts"])
-# app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])
-# app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(credit_check.router, prefix="/api/v1/credit-check", tags=["credit-check"])
+app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])

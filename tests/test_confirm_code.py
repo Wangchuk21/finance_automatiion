@@ -5,6 +5,7 @@ Tests for temporary confirmation code (M2/M3 security).
 """
 
 import json
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +15,8 @@ from fastapi.testclient import TestClient
 from app.api.uploads import get_current_user
 from app.core.config import settings
 from app.core.confirm import reset_confirm_attempts, verify_confirm_code
+from app.core.auth import get_current_user as get_current_user_dep
+from app.core.security import hash_password
 from app.db.session import get_session
 from app.main import app
 from app.models import Contract, ContractState, User
@@ -27,28 +30,62 @@ def clean_rate_limits():
     reset_confirm_attempts()
 
 
-def test_1_503_when_not_dev_or_code_unset(monkeypatch):
+@pytest.fixture
+def auth_client(monkeypatch):
+    """Create test client with authenticated admin user."""
+    # Create mock admin user
+    mock_user = User(
+        id=1,
+        username="admin",
+        email="admin@example.com",
+        full_name="Admin User",
+        password_hash=hash_password("TempPass123!@#"),
+        is_active=True,
+        role="admin",
+        must_change_password=False,
+        token_version=1,
+        failed_login_count=0,
+        locked_until=None,
+        temp_password_expires_at=None,
+    )
+    
+    # Mock session
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=None)
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    
+    # Override dependencies
+    app.dependency_overrides[get_session] = lambda: mock_session
+    app.dependency_overrides[get_current_user_dep] = lambda: mock_user
+    
+    client = TestClient(app)
+    yield client
+    
+    app.dependency_overrides.clear()
+
+
+def test_1_503_when_not_dev_or_code_unset(monkeypatch, auth_client):
     """1. 503 when not dev or code unset."""
     # Sub-case A: prod environment
     monkeypatch.setattr(settings, "APP_ENV", "prod")
     monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "test-secret-123")
 
     with pytest.raises(HTTPException) as exc_info:
-        import asyncio
         asyncio.run(verify_confirm_code("test-secret-123"))
     assert exc_info.value.status_code == 503
     assert "Confirmation is not configured" in exc_info.value.detail
 
     # Test via API endpoint
-    client = TestClient(app)
-    resp = client.post("/api/v1/contracts/1/close", json={"code": "test-secret-123"})
+    resp = auth_client.post("/api/v1/contracts/1/close", json={"code": "test-secret-123"})
     assert resp.status_code == 503
     assert "Confirmation is not configured" in resp.json()["detail"]
 
-    resp = client.post("/api/v1/uploads/1/confirm", json={"code": "test-secret-123"})
+    resp = auth_client.post("/api/v1/uploads/1/confirm", json={"code": "test-secret-123"})
     assert resp.status_code == 503
 
-    resp = client.post("/api/v1/uploads/1/rollback", json={"code": "test-secret-123"})
+    resp = auth_client.post("/api/v1/uploads/1/rollback", json={"code": "test-secret-123"})
     assert resp.status_code == 503
 
     # Sub-case B: dev environment but empty code
@@ -60,42 +97,35 @@ def test_1_503_when_not_dev_or_code_unset(monkeypatch):
     assert exc_info.value.status_code == 503
     assert "Confirmation is not configured" in exc_info.value.detail
 
-    resp = client.post("/api/v1/contracts/1/close", json={"code": "test-secret-123"})
-    assert resp.status_code == 503
 
-
-def test_2_400_on_wrong_code(monkeypatch):
+def test_2_400_on_wrong_code(monkeypatch, auth_client):
     """2. 400 on wrong code."""
     monkeypatch.setattr(settings, "APP_ENV", "dev")
     monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "correct-secret-123")
 
     with pytest.raises(HTTPException) as exc_info:
-        import asyncio
         asyncio.run(verify_confirm_code("bad-code-999"))
     assert exc_info.value.status_code == 400
     assert "Invalid confirmation code" in exc_info.value.detail
 
     # Test via API endpoint
-    client = TestClient(app)
-    resp = client.post("/api/v1/contracts/1/close", json={"code": "bad-code-999"})
+    resp = auth_client.post("/api/v1/contracts/1/close", json={"code": "bad-code-999"})
     assert resp.status_code == 400
     assert "Invalid confirmation code" in resp.json()["detail"]
 
-    resp = client.post("/api/v1/uploads/1/confirm", json={"code": "bad-code-999"})
+    resp = auth_client.post("/api/v1/uploads/1/confirm", json={"code": "bad-code-999"})
     assert resp.status_code == 400
     assert "Invalid confirmation code" in resp.json()["detail"]
 
-    resp = client.post("/api/v1/uploads/1/rollback", json={"code": "bad-code-999"})
+    resp = auth_client.post("/api/v1/uploads/1/rollback", json={"code": "bad-code-999"})
     assert resp.status_code == 400
     assert "Invalid confirmation code" in resp.json()["detail"]
 
 
-def test_3_429_on_6th_wrong_attempt(monkeypatch):
+def test_3_429_on_6th_wrong_attempt(monkeypatch, auth_client):
     """3. 429 on 6th wrong attempt."""
     monkeypatch.setattr(settings, "APP_ENV", "dev")
     monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "correct-secret-123")
-
-    import asyncio
 
     # First 5 wrong attempts raise 400
     for i in range(5):
@@ -110,17 +140,15 @@ def test_3_429_on_6th_wrong_attempt(monkeypatch):
     assert "Too many incorrect attempts" in exc_info.value.detail
 
     # Endpoint must also return 429 while locked
-    client = TestClient(app)
-    resp = client.post("/api/v1/contracts/1/close", json={"code": "wrong-7"})
+    resp = auth_client.post("/api/v1/contracts/1/close", json={"code": "wrong-7"})
     assert resp.status_code == 429
 
 
-def test_4_200_on_correct_code(monkeypatch):
+def test_4_200_on_correct_code(monkeypatch, auth_client):
     """4. 200 on correct code."""
     monkeypatch.setattr(settings, "APP_ENV", "dev")
     monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "correct-secret-123")
 
-    import asyncio
     # verify direct function passes without exception
     asyncio.run(verify_confirm_code("correct-secret-123"))
 
@@ -137,20 +165,11 @@ def test_4_200_on_correct_code(monkeypatch):
         state=ContractState.ACTIVE,
     )
     mock_session.get.return_value = test_contract
-    mock_user = User(id=1, username="admin", full_name="Admin", email="admin@example.com", role="admin")
 
-    async def override_session():
-        yield mock_session
-
-    async def override_user():
-        return mock_user
-
-    app.dependency_overrides[get_session] = override_session
-    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_session] = lambda: mock_session
 
     try:
-        client = TestClient(app)
-        resp = client.post("/api/v1/contracts/1/close", json={"code": "correct-secret-123"})
+        resp = auth_client.post("/api/v1/contracts/1/close", json={"code": "correct-secret-123"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["contract_id"] == 1
@@ -163,8 +182,6 @@ def test_5_audit_log_has_result_but_never_the_code(monkeypatch):
     """5. audit_log has result but NEVER the code."""
     monkeypatch.setattr(settings, "APP_ENV", "dev")
     monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "super-secret-code-xyz")
-
-    import asyncio
 
     session = AsyncMock()
     added_logs = []

@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { cn } from "@/lib/utils";
 
@@ -39,8 +38,8 @@ export function CollectionTrendChart({ data, className }: CollectionTrendChartPr
                 boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
               }}
               labelStyle={{ color: "#111827", fontWeight: 600 }}
-              formatter={(value: number, name: string) => [
-                `Nu. ${value.toLocaleString("en-IN")}`,
+              formatter={(value: any, name: any) => [
+                `Nu. ${Number(value || 0).toLocaleString("en-IN")}`,
                 name === "internal" ? "Internal" : name === "external" ? "External" : "Total",
               ]}
             />

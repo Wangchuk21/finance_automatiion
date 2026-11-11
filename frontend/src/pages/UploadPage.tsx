@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useDropzone } from "react-dropzone";
-import { FileText, Upload, X, CheckCircle, AlertCircle, Loader2, ChevronRight, Eye, Settings } from "lucide-react";
+import { Upload, X, CheckCircle, AlertCircle, Loader2, FileSpreadsheet, UserPlus, CreditCard, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,14 +10,6 @@ import { Stepper, type StepperStep } from "@/components/ui/stepper";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
 import { formatError } from "@/lib/api";
 
 interface ValidationIssue {
@@ -56,6 +48,67 @@ const uploadSteps: StepperStep[] = [
   { id: "confirm", label: "Confirm", status: "pending" },
 ];
 
+type UploadTypeKey = "full" | "customer" | "payment";
+
+const MAX_UPLOAD_MB = 50;
+
+/** Read a response body without assuming it is JSON (nginx/proxy errors are HTML). */
+async function readApiResponse(
+  response: Response
+): Promise<{ data: any; isJson: boolean }> {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return { data: await response.json().catch(() => null), isJson: true };
+  }
+  return { data: null, isJson: false };
+}
+
+function httpErrorMessage(response: Response, action = "Upload"): string {
+  switch (response.status) {
+    case 413:
+      return `File is too large. Maximum ${action.toLowerCase()} size is ${MAX_UPLOAD_MB} MB.`;
+    case 401:
+      return "Your session has expired. Please sign in again.";
+    case 504:
+      return "The server took too long to process the file. Please try again.";
+    default:
+      return `${action} failed (HTTP ${response.status}). Please try again.`;
+  }
+}
+
+const UPLOAD_TYPES: Record<
+  UploadTypeKey,
+  {
+    label: string;
+    description: string;
+    icon: React.ReactNode;
+    endpoint: string;
+    color: string;
+  }
+> = {
+  full: {
+    label: "Full Upload",
+    description: "Contracts + Installments (original format)",
+    icon: <FileSpreadsheet className="h-5 w-5" />,
+    endpoint: "/api/v1/uploads",
+    color: "text-primary",
+  },
+  customer: {
+    label: "Customer Upload",
+    description: "New customers / contract master data only",
+    icon: <UserPlus className="h-5 w-5" />,
+    endpoint: "/api/v1/uploads/customers",
+    color: "text-success",
+  },
+  payment: {
+    label: "Payment Upload",
+    description: "Monthly installment / payment data only",
+    icon: <CreditCard className="h-5 w-5" />,
+    endpoint: "/api/v1/uploads/payments",
+    color: "text-warning",
+  },
+};
+
 export function UploadPage() {
   const [currentStep, setCurrentStep] = React.useState(0);
   const [file, setFile] = React.useState<File | null>(null);
@@ -68,6 +121,7 @@ export function UploadPage() {
     const today = new Date();
     return today.toISOString().slice(0, 10); // YYYY-MM-DD
   });
+  const [uploadType, setUploadType] = React.useState<UploadTypeKey>("customer");
 
   const onDrop = React.useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -80,7 +134,24 @@ export function UploadPage() {
     }
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"], "application/vnd.ms-excel": [".xls"] } });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: {
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+      "application/vnd.ms-excel": [".xls"],
+    },
+    maxSize: MAX_UPLOAD_MB * 1024 * 1024,
+    onDropRejected: (rejections) => {
+      const tooLarge = rejections.some((r) =>
+        r.errors.some((e) => e.code === "file-too-large")
+      );
+      alert(
+        tooLarge
+          ? `File is too large. Maximum upload size is ${MAX_UPLOAD_MB} MB.`
+          : "Please select an Excel file (.xlsx or .xls)"
+      );
+    },
+  });
 
   const handleUpload = async () => {
     if (!file) return;
@@ -90,13 +161,13 @@ export function UploadPage() {
       formData.append("file", file);
       formData.append("as_of_date", asOfDate);
 
-      const response = await fetch("/api/v1/uploads", {
+      const response = await fetch(UPLOAD_TYPES[uploadType].endpoint, {
         method: "POST",
         body: formData,
       });
 
-      const data = await response.json();
-      if (response.ok) {
+      const { data, isJson } = await readApiResponse(response);
+      if (response.ok && isJson) {
         const id = data.id ?? data.preview?.id;
         setUploadId(id);
         setPreview({
@@ -104,8 +175,14 @@ export function UploadPage() {
           ...data.preview,
         });
         setCurrentStep(1); // Go to validate step
+      } else if (response.ok) {
+        alert("Upload succeeded but the server returned an unexpected response. Please refresh and check the upload list.");
       } else {
-        alert(formatError(data.detail));
+        alert(
+          isJson && data?.detail
+            ? formatError(data.detail)
+            : httpErrorMessage(response, "Upload")
+        );
       }
     } catch (error) {
       alert(error instanceof Error ? error.message : "Upload failed. Please try again.");
@@ -122,13 +199,13 @@ export function UploadPage() {
     }
     setIsConfirming(true);
     try {
-      const response = await fetch(`/api/v1/uploads/${targetId}/confirm`, {
+      const response = await fetch(`${UPLOAD_TYPES[uploadType].endpoint}/${targetId}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ totp_code: totpCode, code: totpCode }),
       });
 
-      const data = await response.json();
+      const { data, isJson } = await readApiResponse(response);
       if (response.ok) {
         alert("Upload confirmed successfully!");
         setCurrentStep(0);
@@ -137,7 +214,11 @@ export function UploadPage() {
         setUploadId(null);
         setTotpCode("");
       } else {
-        alert(formatError(data.detail));
+        alert(
+          isJson && data?.detail
+            ? formatError(data.detail)
+            : httpErrorMessage(response, "Confirmation")
+        );
       }
     } catch (error) {
       alert(error instanceof Error ? error.message : "Confirmation failed. Please try again.");
@@ -149,7 +230,7 @@ export function UploadPage() {
   const renderStepContent = () => {
     switch (currentStep) {
       case 0:
-        return <UploadStep onDrop={onDrop} getRootProps={getRootProps} getInputProps={getInputProps} isDragActive={isDragActive} file={file} asOfDate={asOfDate} setAsOfDate={setAsOfDate} onUpload={handleUpload} isUploading={isUploading} />;
+        return <UploadStep onDrop={onDrop} getRootProps={getRootProps} getInputProps={getInputProps} isDragActive={isDragActive} file={file} setFile={setFile} asOfDate={asOfDate} setAsOfDate={setAsOfDate} onUpload={handleUpload} isUploading={isUploading} uploadType={uploadType} setUploadType={setUploadType} />;
       case 1:
         return <ValidateStep preview={preview} onNext={() => setCurrentStep(2)} onBack={() => setCurrentStep(0)} />;
       case 2:
@@ -180,18 +261,99 @@ export function UploadPage() {
 }
 
 function UploadStep({
-  onDrop,
   getRootProps,
   getInputProps,
   isDragActive,
   file,
+  setFile,
   asOfDate,
   setAsOfDate,
   onUpload,
   isUploading,
+  uploadType,
+  setUploadType,
 }: any) {
   return (
     <div className="p-6 space-y-6">
+      <Card className="border-primary/50 bg-primary/5">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+              <span className="text-sm font-bold text-primary">!</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="font-medium text-text-primary mb-2">Recommended Upload Order</h4>
+              <ol className="space-y-1 text-sm text-text-secondary list-decimal list-inside">
+                <li>
+                  <strong>Step 1:</strong>{" "}
+                  <span className="text-success">Customer Upload</span> — Upload
+                  &quot;Customer or sales Details.xlsx&quot; first (creates contract master data)
+                </li>
+                <li>
+                  <strong>Step 2:</strong>{" "}
+                  <span className="text-warning">Payment Upload</span> — Upload
+                  &quot;Salary_Slip_Oct.xlsx&quot; (employee EMI payments)
+                </li>
+                <li>
+                  <strong>Step 3:</strong>{" "}
+                  <span className="text-warning">Payment Upload</span> — Upload
+                  &quot;Payment.xlsx&quot; (external customer EMI payments)
+                </li>
+              </ol>
+              <p className="text-xs text-text-secondary mt-2">
+                <em>
+                  Note: Payment uploads require contracts to exist from Step 1. Select
+                  &quot;Customer Upload&quot; type for customer data, &quot;Payment
+                  Upload&quot; for payment files.
+                </em>
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="mb-4">
+        <Label className="block mb-2">Upload Type</Label>
+        <div className="grid grid-cols-3 gap-3">
+          {(["full", "customer", "payment"] as UploadTypeKey[]).map((key) => {
+            const type = UPLOAD_TYPES[key];
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setUploadType(key)}
+                className={cn(
+                  "relative p-4 rounded-lg border-2 transition-all text-left",
+                  uploadType === key
+                    ? "border-primary bg-primary/5 shadow-md shadow-primary/10"
+                    : "border-border hover:border-primary/50 hover:bg-neutral-light/50"
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  <span
+                    className={cn(
+                      "p-2 rounded-lg",
+                      uploadType === key ? "bg-primary/10" : "bg-neutral-light/50"
+                    )}
+                  >
+                    {type.icon}
+                  </span>
+                  <div>
+                    <p className="font-medium text-text-primary">{type.label}</p>
+                    <p className="text-sm text-text-secondary">{type.description}</p>
+                  </div>
+                </div>
+                {uploadType === key && (
+                  <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                    <Check className="h-3 w-3 text-white" />
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
           <Label className="block mb-2">Drag & drop Excel file or click to browse</Label>
@@ -304,7 +466,7 @@ function ValidateStep({ preview, onNext, onBack }: any) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ValidationIssuesList issues={report.issues.filter((i) => i.severity === "error")} />
+            <ValidationIssuesList issues={report.issues.filter((i: ValidationIssue) => i.severity === "error")} />
           </CardContent>
         </Card>
       )}
@@ -317,7 +479,7 @@ function ValidateStep({ preview, onNext, onBack }: any) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ValidationIssuesList issues={report.issues.filter((i) => i.severity === "warning")} />
+            <ValidationIssuesList issues={report.issues.filter((i: ValidationIssue) => i.severity === "warning")} />
           </CardContent>
         </Card>
       )}

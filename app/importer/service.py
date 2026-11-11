@@ -223,9 +223,13 @@ async def _upsert_installments(
         salary_amount = _to_decimal(inst_data.get("salary_amount"))
 
         # received = sum of both columns (do NOT clamp to due)
-        received_amount = (external_amount or Decimal("0")) + (
-            salary_amount or Decimal("0")
-        )
+        direct_received = _to_decimal(inst_data.get("received_amount"))
+        if direct_received is not None and external_amount is None and salary_amount is None:
+            received_amount = direct_received
+        else:
+            received_amount = (external_amount or Decimal("0")) + (
+                salary_amount or Decimal("0")
+            )
         received_amount = received_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         # cell_status: not_received / not_deducted (from the cell text)
@@ -302,3 +306,95 @@ async def rollback_upload(session: AsyncSession, upload_id: int) -> bool:
         upload.status = UploadStatus.ROLLED_BACK
         return True
     return False
+
+
+# ============================================================================
+# Customer-only upsert (static contract/customer data)
+# ============================================================================
+
+async def upsert_customers(
+    session: AsyncSession,
+    contracts: List[Dict[str, Any]],
+    upload_id: int,
+) -> UpsertResult:
+    """
+    Upsert customer/contract static data only (no installments).
+
+    Uses reference as the unique key for upsert.
+    """
+    result = UpsertResult()
+
+    for contract_data in contracts:
+        reference = contract_data.get("reference")
+        if not reference:
+            result.errors.append("Contract missing reference, skipping")
+            continue
+
+        # Check if contract exists
+        stmt = select(Contract).where(Contract.reference == reference)
+        existing = await session.execute(stmt)
+        contract = existing.scalar_one_or_none()
+
+        is_new = contract is None
+        if is_new:
+            contract = Contract(reference=reference)
+            session.add(contract)
+            result.contracts_created += 1
+        else:
+            result.contracts_updated += 1
+
+        # Update static fields only (no installments)
+        _update_contract_fields(contract, contract_data)
+
+        # Ensure state is active if not set
+        if not contract.state:
+            contract.state = ContractState.ACTIVE
+
+    return result
+
+
+# ============================================================================
+# Payment-only upsert (installment/payment data)
+# ============================================================================
+
+async def upsert_payments(
+    session: AsyncSession,
+    contracts: List[Dict[str, Any]],
+    upload_id: int,
+    as_of: Optional[date] = None,
+) -> UpsertResult:
+    """
+    Upsert payment/installment data only.
+
+    Matches contracts by reference, then upserts their installments.
+    """
+    result = UpsertResult()
+
+    for contract_data in contracts:
+        reference = contract_data.get("reference")
+        if not reference:
+            result.errors.append("Contract missing reference, skipping")
+            continue
+
+        # Find existing contract by reference
+        stmt = select(Contract).where(Contract.reference == reference)
+        existing = await session.execute(stmt)
+        contract = existing.scalar_one_or_none()
+
+        if contract is None:
+            result.errors.append(f"Contract with reference '{reference}' not found in database")
+            continue
+
+        installments_data = contract_data.get("installments", [])
+        if not installments_data:
+            continue
+
+        # Upsert installments
+        inst_result = await _upsert_installments(
+            session, contract.id, installments_data, upload_id, as_of=as_of
+        )
+        result.installments_created += inst_result.created
+        result.installments_updated += inst_result.updated
+        result.installments_unchanged += inst_result.unchanged
+
+    return result

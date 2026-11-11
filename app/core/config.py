@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "Finance Automation"
-    APP_ENV: str = "prod"
+    APP_ENV: str = "development"
     DEBUG: bool = True
     LOG_LEVEL: str = "INFO"
 
@@ -34,6 +35,12 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(..., min_length=32)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 2
+
+    # Cookie settings
+    COOKIE_SECURE: bool = False
+    COOKIE_SAMESITE: str = "lax"  # lax or strict
+    CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174"  # Comma-separated
 
     # File Upload
     UPLOAD_DIR: Path = Path("./uploads")
@@ -46,6 +53,12 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = "changeme"
     SMTP_FROM: str = "Finance Automation <notifications@example.com>"
 
+    # SMS Gateway (Bhutan Telecom)
+    SMS_GATEWAY_URL: Optional[str] = None
+    SMS_API_KEY: Optional[str] = None
+    SMS_SENDER_ID: str = "BTL-EMI"
+    SMS_ENABLED: bool = False  # Set to True when SMS gateway URL is provided
+
     # Anonymization
     ANONYMIZATION_SALT: str = Field(..., min_length=16)
 
@@ -57,6 +70,11 @@ class Settings(BaseSettings):
     def database_url_sync_for_alembic(self) -> str:
         """Return sync URL with psycopg2 driver for Alembic."""
         return self.DATABASE_URL_SYNC
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parse CORS origins from comma-separated string."""
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
 
 @lru_cache

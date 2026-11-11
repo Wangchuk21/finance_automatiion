@@ -80,6 +80,7 @@ class UploadPreviewResponse(BaseModel):
     contracts_count: int
     validation_report: Dict[str, Any]
     monthly_breakdown: Dict[str, Dict[str, float]]
+    totals: Optional[Dict[str, Any]] = None
 
 
 class UploadResponse(BaseModel):
@@ -207,3 +208,100 @@ class CloseContractResponse(BaseModel):
     contract_id: int
     status: str
     message: str
+
+
+# ============================================================================
+# Customer Upload Schemas (static contract/customer data)
+# ============================================================================
+
+class CustomerUploadCreate(BaseModel):
+    """Request to create a customer upload."""
+    file_name: str
+    as_of_date: date
+    sheet_name: Optional[str] = None
+    header_row: Optional[int] = None
+
+    @field_validator("as_of_date", mode="before")
+    @classmethod
+    def validate_as_of_date(cls, v: Any) -> date:
+        return _parse_as_of_date(v)
+
+
+class CustomerUploadPreviewResponse(BaseModel):
+    """Preview response for customer upload confirmation."""
+    id: Optional[int] = None
+    contracts_count: int
+    validation_report: Dict[str, Any]
+    new_customers: int
+    updated_customers: int
+    customers_with_errors: int
+
+
+class CustomerUploadResponse(BaseModel):
+    """Customer upload response."""
+    id: int
+    file_name: str
+    status: str
+    as_of_date: date
+    uploaded_at: datetime
+    preview: Optional[CustomerUploadPreviewResponse] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CustomerUploadConfirmRequest(BaseModel):
+    """Request to confirm a customer upload."""
+    totp_code: Optional[str] = None
+    code: Optional[str] = None
+
+    def get_code(self) -> str:
+        return self.code or self.totp_code or ""
+
+
+# ============================================================================
+# Payment Upload Schemas (monthly installment/payment data)
+# ============================================================================
+
+class PaymentUploadCreate(BaseModel):
+    """Request to create a payment upload."""
+    file_name: str
+    as_of_date: date
+    sheet_name: Optional[str] = None
+    header_row: Optional[int] = None
+
+    @field_validator("as_of_date", mode="before")
+    @classmethod
+    def validate_as_of_date(cls, v: Any) -> date:
+        return _parse_as_of_date(v)
+
+
+class PaymentUploadPreviewResponse(BaseModel):
+    """Preview response for payment upload confirmation."""
+    id: Optional[int] = None
+    contracts_count: int
+    validation_report: Dict[str, Any]
+    monthly_breakdown: Dict[str, Dict[str, float]]
+    totals: Optional[Dict[str, Any]] = None
+    payments_updated: int
+    payments_new: int
+
+
+class PaymentUploadResponse(BaseModel):
+    """Payment upload response."""
+    id: int
+    file_name: str
+    status: str
+    as_of_date: date
+    uploaded_at: datetime
+    preview: Optional[PaymentUploadPreviewResponse] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaymentUploadConfirmRequest(BaseModel):
+    """Request to confirm a payment upload."""
+    totp_code: Optional[str] = None
+    code: Optional[str] = None
+
+    def get_code(self) -> str:
+        return self.code or self.totp_code or ""
