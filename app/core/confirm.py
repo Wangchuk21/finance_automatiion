@@ -4,7 +4,7 @@ Temporary confirmation-code verification.
 # TEMPORARY - replace with real TOTP in M3
 
 Usage: await verify_confirm_code(code, action, entity_id, entity_type, session)
-  - Only works when APP_ENV == "dev" AND TEMP_CONFIRM_CODE is set.
+  - Works when TEMP_CONFIRM_CODE is set.
   - Raises HTTP 503 if not configured, 429 after 5 wrong attempts in 5 min,
     400 for a wrong code.
   - Writes an AuditLog row for every attempt (never stores the code itself).
@@ -108,8 +108,8 @@ async def verify_confirm_code(
     """
     from app.core.config import settings
 
-    # Guard: only active in dev with a code configured
-    if settings.APP_ENV != "dev" or not settings.TEMP_CONFIRM_CODE:
+    # Guard: active whenever TEMP_CONFIRM_CODE is configured
+    if not settings.TEMP_CONFIRM_CODE:
         await _write_audit(session, action, "denied", entity_type, entity_id)
         raise HTTPException(
             status_code=503,

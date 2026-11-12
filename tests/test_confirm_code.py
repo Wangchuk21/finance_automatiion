@@ -67,10 +67,9 @@ def auth_client(monkeypatch):
 
 
 def test_1_503_when_not_dev_or_code_unset(monkeypatch, auth_client):
-    """1. 503 when not dev or code unset."""
-    # Sub-case A: prod environment
-    monkeypatch.setattr(settings, "APP_ENV", "prod")
-    monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "test-secret-123")
+    """1. 503 when code unset."""
+    # Sub-case: empty code configured
+    monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "")
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(verify_confirm_code("test-secret-123"))
@@ -87,15 +86,6 @@ def test_1_503_when_not_dev_or_code_unset(monkeypatch, auth_client):
 
     resp = auth_client.post("/api/v1/uploads/1/rollback", json={"code": "test-secret-123"})
     assert resp.status_code == 503
-
-    # Sub-case B: dev environment but empty code
-    monkeypatch.setattr(settings, "APP_ENV", "dev")
-    monkeypatch.setattr(settings, "TEMP_CONFIRM_CODE", "")
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(verify_confirm_code("test-secret-123"))
-    assert exc_info.value.status_code == 503
-    assert "Confirmation is not configured" in exc_info.value.detail
 
 
 def test_2_400_on_wrong_code(monkeypatch, auth_client):
