@@ -21,7 +21,36 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $*"; }
 
 COMPOSE_FILE="docker-compose.prod.yml"
+TLS_COMPOSE_FILE="docker-compose.tls.yml"
 ENV_FILE=".env.prod"
+PROXY_CONTAINER="finance-proxy-prod"
+
+# Parse KEY=VALUE lines without bash `source` so values containing characters
+# like `<`, `>`, `&`, or spaces (e.g. SMTP_FROM) cannot break the script.
+load_env_file() {
+    local file="$1" line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" != *=* ]] && continue
+
+        key="${line%%=*}"
+        value="${line#*=}"
+
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+
+        export "$key=$value"
+    done < "$file"
+}
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
@@ -38,10 +67,17 @@ if [[ ! -f "$ENV_FILE" ]]; then
     exit 1
 fi
 
+# Compose file(s): the TLS proxy lives in its own file on the server.
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+if [[ -f "$TLS_COMPOSE_FILE" ]]; then
+    COMPOSE_ARGS+=(-f "$TLS_COMPOSE_FILE")
+    log_info "Including $TLS_COMPOSE_FILE (TLS reverse proxy)"
+else
+    log_warn "$TLS_COMPOSE_FILE not found — deploying without the TLS proxy"
+fi
+
 # Load environment
-set -a
-source "$ENV_FILE"
-set +a
+load_env_file "$ENV_FILE"
 
 # ── 2. Validate required variables ──────────────────────────────────────────
 log_step "Validating configuration..."
@@ -76,13 +112,32 @@ mkdir -p uploads logs
 # ── 4. Build & Deploy ────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--quick" ]]; then
     log_step "Quick restart (no rebuild)..."
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+    docker compose "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d
 else
     log_step "Building application images..."
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+    docker compose "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" build
 
     log_step "Starting services..."
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+    docker compose "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d
+fi
+
+# ── 4b. Restart reverse proxy ────────────────────────────────────────────────
+# Recreated frontend/backend containers get new IPs and nginx caches upstream
+# IPs at startup, which yields 502 Bad Gateway until it resolves them again.
+log_step "Restarting reverse proxy (re-resolve upstream IPs)..."
+if docker ps --format '{{.Names}}' | grep -qx "$PROXY_CONTAINER"; then
+    if docker exec "$PROXY_CONTAINER" nginx -t >/dev/null 2>&1; then
+        docker restart "$PROXY_CONTAINER" >/dev/null
+        for _ in {1..10}; do
+            [[ "$(docker inspect -f '{{.State.Running}}' "$PROXY_CONTAINER" 2>/dev/null)" == "true" ]] && break
+            sleep 1
+        done
+        log_info "Proxy restarted ✓"
+    else
+        log_warn "Proxy config test failed — not restarting (run: docker exec $PROXY_CONTAINER nginx -t)"
+    fi
+else
+    log_warn "Proxy container $PROXY_CONTAINER not running — skipping restart"
 fi
 
 # ── 5. Wait for health ──────────────────────────────────────────────────────
@@ -91,7 +146,7 @@ sleep 10
 
 HEALTHY=true
 for service in postgres backend frontend; do
-    status=$(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps "$service" --format '{{.Health}}' 2>/dev/null || echo "unknown")
+    status=$(docker compose "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" ps "$service" --format '{{.Health}}' 2>/dev/null || echo "unknown")
     if [[ "$status" == "healthy" ]]; then
         log_info "  $service: healthy ✓"
     else
@@ -117,7 +172,7 @@ echo -e "${GREEN}║   Backend:  http://localhost:8000             ║${NC}"
 echo -e "${GREEN}║   Frontend: http://localhost:3000             ║${NC}"
 echo -e "${GREEN}║   Domain:   https://${DOMAIN:-localhost}                ║${NC}"
 echo -e "${GREEN}║                                              ║${NC}"
-echo -e "${GREEN}║   Logs:  docker compose -f $COMPOSE_FILE logs -f  ║${NC}"
+echo -e "${GREEN}║   Logs:  docker compose ${COMPOSE_ARGS[*]} logs -f  ║${NC}"
 echo -e "${GREEN}║                                              ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""

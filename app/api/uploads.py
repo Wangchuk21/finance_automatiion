@@ -475,21 +475,35 @@ async def confirm_upload(
         from app.importer.service import upsert_contracts
         result = await upsert_contracts(session, contracts, upload.id)
         
-        # Create installment history records for ALL installments (not just changed ones)
-        # This ensures a complete history baseline for future comparisons
+        # Create installment history records for the installments touched by
+        # this upload. Previously this loaded EVERY installment in the database
+        # and inserted one history row per installment, which grew slower on
+        # every upload and attributed unrelated contracts to this upload.
         from app.models import Installment, InstallmentHistory
-        from sqlalchemy import select
-        installments = await session.execute(select(Installment))
-        for inst in installments.scalars().all():
-            history = InstallmentHistory(
-                installment_id=inst.id,
-                upload_id=upload.id,
-                previous_status=None,
-                new_status=inst.status,
-                previous_received=None,
-                new_received=inst.received_amount,
+        from sqlalchemy import insert, select
+
+        history_values = []
+        if result.contract_ids:
+            rows = await session.execute(
+                select(
+                    Installment.id,
+                    Installment.status,
+                    Installment.received_amount,
+                ).where(Installment.contract_id.in_(result.contract_ids))
             )
-            session.add(history)
+            history_values = [
+                {
+                    "installment_id": row.id,
+                    "upload_id": upload.id,
+                    "previous_status": None,
+                    "new_status": row.status,
+                    "previous_received": None,
+                    "new_received": row.received_amount,
+                }
+                for row in rows
+            ]
+        if history_values:
+            await session.execute(insert(InstallmentHistory), history_values)
         
         # Update upload status
         upload.status = UploadStatus.CONFIRMED

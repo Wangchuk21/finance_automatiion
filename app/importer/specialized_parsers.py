@@ -97,21 +97,21 @@ def parse_salary_slip(
     for (ref, month, year), data in grouped.items():
         components = data["components"]
 
-        # Map salary components to payment types
-        received_amount = Decimal("0")
+        # Map salary components to payment types. A Salary Slip records amounts
+        # deducted from payroll, so components such as "BTL Sales" (and its GST)
+        # are salary deductions, not external receipts. Both split columns must
+        # be filled: the DB upsert derives received_amount from their sum.
         salary_amount = Decimal("0")
         external_amount = Decimal("0")
 
         for comp, amt in components.items():
             comp_lower = comp.lower()
-            if "btl" in comp_lower or "sales" in comp_lower or "received" in comp_lower:
-                received_amount += amt
-            elif "bhutan telecom" in comp_lower or "telecom" in comp_lower or "external" in comp_lower:
+            if "bhutan telecom" in comp_lower or "telecom" in comp_lower or "external" in comp_lower:
                 external_amount += amt
-            elif "salary" in comp_lower or "basic" in comp_lower or "allowance" in comp_lower:
-                salary_amount += amt
             else:
-                received_amount += amt
+                salary_amount += amt
+
+        received_amount = salary_amount + external_amount
 
         due_month = date(year, month, 1)
 

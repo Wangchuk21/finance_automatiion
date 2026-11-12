@@ -30,8 +30,20 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: "Request failed" }));
-    throw new Error(formatError(body.detail) || `HTTP ${response.status}`);
+    // Error bodies are usually JSON, but proxies and unhandled server errors
+    // return HTML/plain text. Fall back to the status so the UI never shows a
+    // bare "Request failed" with no clue about what happened.
+    const text = await response.text().catch(() => "");
+    let detail: unknown;
+    try {
+      detail = JSON.parse(text).detail;
+    } catch {
+      detail = undefined;
+    }
+    const status = response.statusText
+      ? `HTTP ${response.status} ${response.statusText}`
+      : `HTTP ${response.status}`;
+    throw new Error(detail ? formatError(detail) : `Request failed (${status})`);
   }
 
   return response.json();

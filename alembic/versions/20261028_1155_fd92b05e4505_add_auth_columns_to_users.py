@@ -38,8 +38,10 @@ def upgrade() -> None:
     op.execute("CREATE TYPE userrole_new AS ENUM ('admin', 'finance_uploader', 'viewer')")
     # Update the column to use new enum
     op.execute("ALTER TABLE users ALTER COLUMN role TYPE userrole_new USING role::text::userrole_new")
-    # Drop old enum and rename new
-    op.execute("DROP TYPE userrole")
+    # Drop old enum and rename new. ``IF EXISTS`` keeps fresh databases working:
+    # the initial migration creates ``role`` as a plain VARCHAR, so there may be
+    # no ``userrole`` type to drop.
+    op.execute("DROP TYPE IF EXISTS userrole")
     op.execute("ALTER TYPE userrole_new RENAME TO userrole")
 
     # Remove old columns

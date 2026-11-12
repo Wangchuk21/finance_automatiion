@@ -55,6 +55,8 @@ services:
       - COOKIE_SECURE=true
       - COOKIE_SAMESITE=lax
       - CORS_ORIGINS=https://${DOMAIN:-localhost}
+      - DOMAIN=${DOMAIN:-localhost}
+      - FRONTEND_URL=${FRONTEND_URL:-}
       - SMTP_HOST=${SMTP_HOST:-smtp11.bt.bt}
       - SMTP_PORT=${SMTP_PORT:-465}
       - SMTP_USER=${SMTP_USER:-finance.notification@bt.bt}

@@ -39,6 +39,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -352,7 +353,7 @@ export function ContractsPage() {
         "Sales Amount",
         "GST",
         "Collected",
-        "Receivable",
+        "Outstanding",
         "Balance Due",
         "Start Date",
         "End Date",
@@ -629,7 +630,7 @@ export function ContractsPage() {
                   value={`Nu. ${formatNumber(summary?.monthly_deduction ?? 0)}`}
                 />
                 <SummaryRow
-                  label="Receivable"
+                  label="Outstanding"
                   value={`Nu. ${formatNumber(summary?.outstanding ?? 0)}`}
                 />
                 <SummaryRow
@@ -754,10 +755,10 @@ export function ContractsPage() {
                           order={order}
                           onSort={toggleSort}
                           align="right"
-                          title="Monthly EMI and remaining months (receivable ÷ monthly EMI, capped at total tenor)"
+                          title="Monthly EMI and remaining months (outstanding ÷ monthly EMI, capped at total tenor)"
                         />
                         <SortableHead
-                          label="Receivable"
+                          label="Outstanding"
                           sortKey="outstanding"
                           sort={sort}
                           order={order}
@@ -857,6 +858,30 @@ export function ContractsPage() {
                         );
                       })}
                     </TableBody>
+                    <TableFooter>
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell
+                          colSpan={2}
+                          className="text-xs uppercase tracking-wide text-text-secondary"
+                        >
+                          Total · {formatNumber(summary?.contracts ?? total)} contract
+                          {(summary?.contracts ?? total) === 1 ? "" : "s"}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums">
+                          Nu. {formatNumber(summary?.monthly_deduction ?? 0)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums">
+                          Nu. {formatNumber(summary?.outstanding ?? 0)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums text-success">
+                          Nu. {formatNumber(summary?.collected ?? 0)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums text-critical">
+                          Nu. {formatNumber(summary?.balance_due ?? 0)}
+                        </TableCell>
+                        <TableCell />
+                      </TableRow>
+                    </TableFooter>
                   </Table>
                 </div>
               )}
@@ -1006,7 +1031,7 @@ function MonthsLeftBadge({
             ? "text-warning-dark"
             : "text-text-primary"
       )}
-      title="Remaining EMI months based on receivable ÷ monthly EMI"
+      title="Remaining EMI months based on outstanding ÷ monthly EMI"
     >
       {monthsLeft}
       {total ? (
@@ -1240,7 +1265,7 @@ function ContractDetailDrawer({
           ) : contract ? (
             <div className="space-y-6">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <DetailMetric label="Receivable" value={`Nu. ${formatNumber(contract.outstanding)}`} />
+                <DetailMetric label="Outstanding" value={`Nu. ${formatNumber(contract.outstanding)}`} />
                 <DetailMetric label="Collected" value={`Nu. ${formatNumber(contract.collected)}`} tone="success" />
                 <DetailMetric label="Balance Due" value={`Nu. ${formatNumber(contract.balance_due)}`} tone="critical" />
                 <DetailMetric label="EMI / Month" value={`Nu. ${formatNumber(contract.monthly_deduction)}`} />

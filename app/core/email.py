@@ -67,6 +67,7 @@ def send_welcome_email(
 ) -> bool:
     """Send welcome email with temporary password to new user."""
     subject = "Welcome to Finance Automation - Your Account Details"
+    login_url = settings.login_url
     
     body_html = f"""
     <!DOCTYPE html>
@@ -82,7 +83,7 @@ def send_welcome_email(
             <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
                 <p><strong>Username:</strong> {username}</p>
                 <p><strong>Temporary Password:</strong> <code style="background: #fff; padding: 5px 10px; border-radius: 3px; font-size: 1.1em;">{temp_password}</code></p>
-                <p><strong>Login URL:</strong> <a href="http://localhost:5174/login">http://localhost:5174/login</a></p>
+                <p><strong>Login URL:</strong> <a href="{login_url}">{login_url}</a></p>
             </div>
             
             <p style="color: #DC2626;"><strong>Important:</strong></p>
@@ -112,7 +113,7 @@ Your account has been created by an administrator. Here are your login details:
 
 Username: {username}
 Temporary Password: {temp_password}
-Login URL: http://localhost:5174/login
+Login URL: {login_url}
 
 Important:
 - This temporary password expires in {expires_at_hours} hours
@@ -136,6 +137,7 @@ def send_password_reset_email(
 ) -> bool:
     """Send password reset email with new temporary password."""
     subject = "Your Finance Automation Password Has Been Reset"
+    login_url = settings.login_url
     
     body_html = f"""
     <!DOCTYPE html>
@@ -151,7 +153,7 @@ def send_password_reset_email(
             <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
                 <p><strong>Username:</strong> {username}</p>
                 <p><strong>New Temporary Password:</strong> <code style="background: #fff; padding: 5px 10px; border-radius: 3px; font-size: 1.1em;">{temp_password}</code></p>
-                <p><strong>Login URL:</strong> <a href="http://localhost:5174/login">http://localhost:5174/login</a></p>
+                <p><strong>Login URL:</strong> <a href="{login_url}">{login_url}</a></p>
             </div>
             
             <p style="color: #DC2626;"><strong>Important:</strong></p>
@@ -181,7 +183,7 @@ Your password has been reset by an administrator. Here are your new login detail
 
 Username: {username}
 New Temporary Password: {temp_password}
-Login URL: http://localhost:5174/login
+Login URL: {login_url}
 
 Important:
 - This temporary password expires in {expires_at_hours} hours

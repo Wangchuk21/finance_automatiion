@@ -1237,6 +1237,83 @@ _SKIP_DB = "finance_test" not in _DB_URL
 
 
 @pytest.mark.skipif(_SKIP_DB, reason="Needs finance_test DATABASE_URL")
+def test_salary_slip_parser_records_salary_deductions():
+    """Salary-slip components must populate salary_amount, not just received."""
+    from app.importer.specialized_parsers import parse_salary_slip
+
+    rows = [
+        {
+            "Reference Number": "BT261022000200",
+            "Employee": "1124",
+            "Employee Name": "Kelzang Dorji",
+            "Fiscal Year": "2026",
+            "Month": "10",
+            "Salary Component": "BTL Sales",
+            "Amount": "13650",
+        },
+        {
+            "Reference Number": "BT261022000200",
+            "Employee": "1124",
+            "Employee Name": "Kelzang Dorji",
+            "Fiscal Year": "2026",
+            "Month": "10",
+            "Salary Component": "BTL Sales GST",
+            "Amount": "7890.6",
+        },
+    ]
+
+    contracts, warnings = parse_salary_slip(rows)
+
+    assert warnings == []
+    assert len(contracts) == 1
+    inst = contracts[0]["installments"][0]
+    assert inst["due_month"] == date(2026, 10, 1)
+    assert inst["salary_amount"] == Decimal("21540.60")
+    assert inst["external_amount"] == Decimal("0")
+    assert inst["received_amount"] == Decimal("21540.60")
+
+
+def test_installment_upsert_keeps_direct_received_when_splits_are_zero():
+    """A positive received_amount must not be zeroed by 0/0 split columns."""
+    import asyncio
+
+    from app.importer.service import _upsert_installments
+    from app.models import Installment, InstallmentStatus
+
+    due_month = date(2026, 10, 1)
+    existing = Installment(
+        contract_id=1,
+        due_month=due_month,
+        due_amount=None,
+        received_amount=Decimal("0"),
+        salary_amount=Decimal("0"),
+        external_amount=Decimal("0"),
+        status=InstallmentStatus.PENDING,
+    )
+
+    result = asyncio.run(
+        _upsert_installments(
+            None,  # update path never touches the session
+            contract_id=1,
+            installments_data=[
+                {
+                    "due_month": due_month,
+                    "received_amount": Decimal("21540.60"),
+                    "salary_amount": Decimal("0"),
+                    "external_amount": Decimal("0"),
+                    "due_amount": None,
+                }
+            ],
+            upload_id=1,
+            existing={(1, due_month): existing},
+        )
+    )
+
+    assert existing.received_amount == Decimal("21540.60")
+    assert result.updated == 1
+    assert result.created == 0
+
+
 def test_three_contracts_db_write():
     """End-to-end upsert test against finance_test DB (3 synthetic contracts with dates and tenure)."""
     asyncio.run(_run_db_write_test())

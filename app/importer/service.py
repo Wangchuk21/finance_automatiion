@@ -1,6 +1,6 @@
 """Database upsert service for Excel imports."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
@@ -64,6 +64,7 @@ class UpsertResult:
     installments_updated: int = 0
     installments_unchanged: int = 0
     errors: List[str] = None
+    contract_ids: List[int] = field(default_factory=list)
 
     def __post_init__(self):
         if self.errors is None:
@@ -79,44 +80,72 @@ async def upsert_contracts(
     """
     Upsert contracts and their installments.
 
-    Uses reference as the unique key for upsert.
+    Uses reference as the unique key for upsert. Existing contracts and
+    installments are loaded in batches (instead of one query per row) so
+    large spreadsheets confirm in seconds rather than minutes.
     """
     result = UpsertResult()
 
+    # Collect valid rows first so contracts/installments can be fetched at once.
+    valid: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
     for contract_data in contracts:
         reference = contract_data.get("reference")
         if not reference:
             result.errors.append("Contract missing reference, skipping")
             continue
+        installments_data = contract_data.pop("installments", []) or []
+        valid.append((contract_data, installments_data))
 
-        installments_data = contract_data.pop("installments", [])
+    existing_by_ref: Dict[str, Contract] = {}
+    if valid:
+        refs = [contract_data["reference"] for contract_data, _ in valid]
+        rows = await session.execute(select(Contract).where(Contract.reference.in_(refs)))
+        existing_by_ref = {contract.reference: contract for contract in rows.scalars()}
 
-        # Check if contract exists
-        stmt = select(Contract).where(Contract.reference == reference)
-        existing = await session.execute(stmt)
-        contract = existing.scalar_one_or_none()
-
-        is_new = contract is None
-        if is_new:
+    for contract_data, _ in valid:
+        reference = contract_data["reference"]
+        contract = existing_by_ref.get(reference)
+        if contract is None:
             contract = Contract(reference=reference)
             session.add(contract)
+            existing_by_ref[reference] = contract
             result.contracts_created += 1
         else:
             result.contracts_updated += 1
 
-        # Update static fields
         _update_contract_fields(contract, contract_data)
 
-        # Flush to get contract ID
-        await session.flush()
+    # One flush assigns IDs to every new contract.
+    await session.flush()
 
-        # Upsert installments
+    contract_ids = [contract.id for contract in existing_by_ref.values()]
+    result.contract_ids = [cid for cid in contract_ids if cid is not None]
+
+    existing_installments: Dict[Tuple[int, date], Installment] = {}
+    if result.contract_ids:
+        rows = await session.execute(
+            select(Installment).where(Installment.contract_id.in_(result.contract_ids))
+        )
+        existing_installments = {
+            (inst.contract_id, inst.due_month): inst for inst in rows.scalars()
+        }
+
+    for contract_data, installments_data in valid:
+        contract = existing_by_ref[contract_data["reference"]]
         inst_result = await _upsert_installments(
-            session, contract.id, installments_data, upload_id, as_of=as_of
+            session,
+            contract.id,
+            installments_data,
+            upload_id,
+            as_of=as_of,
+            existing=existing_installments,
         )
         result.installments_created += inst_result.created
         result.installments_updated += inst_result.updated
         result.installments_unchanged += inst_result.unchanged
+
+    # Persist new installments so callers can read their generated IDs.
+    await session.flush()
 
     return result
 
@@ -205,8 +234,14 @@ async def _upsert_installments(
     installments_data: List[Dict[str, Any]],
     upload_id: int,
     as_of: Optional[date] = None,
+    existing: Optional[Dict[Tuple[int, date], Installment]] = None,
 ) -> InstallmentUpsertResult:
-    """Upsert installments for a contract."""
+    """Upsert installments for a contract.
+
+    ``existing`` is an optional pre-fetched map of
+    ``(contract_id, due_month) -> Installment`` shared across contracts. When
+    supplied, no per-row SELECT is issued.
+    """
     result = InstallmentUpsertResult()
 
     for inst_data in installments_data:
@@ -224,12 +259,18 @@ async def _upsert_installments(
 
         # received = sum of both columns (do NOT clamp to due)
         direct_received = _to_decimal(inst_data.get("received_amount"))
-        if direct_received is not None and external_amount is None and salary_amount is None:
+        split_received = (external_amount or Decimal("0")) + (
+            salary_amount or Decimal("0")
+        )
+        # Prefer the direct value when the split columns are absent *or* both
+        # zero. Some parsers (e.g. salary slips) put the whole amount in
+        # received_amount and default the split columns to 0; using the split
+        # sum unconditionally would silently store 0 and the upload would look
+        # like it changed nothing.
+        if direct_received is not None and split_received == Decimal("0"):
             received_amount = direct_received
         else:
-            received_amount = (external_amount or Decimal("0")) + (
-                salary_amount or Decimal("0")
-            )
+            received_amount = split_received
         received_amount = received_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         # cell_status: not_received / not_deducted (from the cell text)
@@ -238,13 +279,17 @@ async def _upsert_installments(
         # status
         status = _determine_installment_status(due_amount, received_amount, cell_status, as_of)
 
-        # Check if installment exists
-        stmt = select(Installment).where(
-            Installment.contract_id == contract_id,
-            Installment.due_month == due_month,
-        )
-        existing = await session.execute(stmt)
-        installment = existing.scalar_one_or_none()
+        # Check if installment exists (pre-fetched map when available)
+        key = (contract_id, due_month)
+        if existing is not None:
+            installment = existing.get(key)
+        else:
+            stmt = select(Installment).where(
+                Installment.contract_id == contract_id,
+                Installment.due_month == due_month,
+            )
+            rows = await session.execute(stmt)
+            installment = rows.scalar_one_or_none()
 
         if installment is None:
             installment = Installment(
@@ -258,6 +303,8 @@ async def _upsert_installments(
                 status=status,
             )
             session.add(installment)
+            if existing is not None:
+                existing[key] = installment
             result.created += 1
         else:
             has_changes = False
@@ -320,25 +367,31 @@ async def upsert_customers(
     """
     Upsert customer/contract static data only (no installments).
 
-    Uses reference as the unique key for upsert.
+    Uses reference as the unique key for upsert and loads existing contracts
+    in a single query.
     """
     result = UpsertResult()
 
+    valid: List[Dict[str, Any]] = []
     for contract_data in contracts:
-        reference = contract_data.get("reference")
-        if not reference:
+        if not contract_data.get("reference"):
             result.errors.append("Contract missing reference, skipping")
             continue
+        valid.append(contract_data)
 
-        # Check if contract exists
-        stmt = select(Contract).where(Contract.reference == reference)
-        existing = await session.execute(stmt)
-        contract = existing.scalar_one_or_none()
+    existing_by_ref: Dict[str, Contract] = {}
+    if valid:
+        refs = [contract_data["reference"] for contract_data in valid]
+        rows = await session.execute(select(Contract).where(Contract.reference.in_(refs)))
+        existing_by_ref = {contract.reference: contract for contract in rows.scalars()}
 
-        is_new = contract is None
-        if is_new:
+    for contract_data in valid:
+        reference = contract_data["reference"]
+        contract = existing_by_ref.get(reference)
+        if contract is None:
             contract = Contract(reference=reference)
             session.add(contract)
+            existing_by_ref[reference] = contract
             result.contracts_created += 1
         else:
             result.contracts_updated += 1
@@ -366,32 +419,53 @@ async def upsert_payments(
     """
     Upsert payment/installment data only.
 
-    Matches contracts by reference, then upserts their installments.
+    Matches contracts by reference, then upserts their installments. Contracts
+    and installments are loaded in batches rather than per row.
     """
     result = UpsertResult()
 
+    valid: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
     for contract_data in contracts:
         reference = contract_data.get("reference")
         if not reference:
             result.errors.append("Contract missing reference, skipping")
             continue
+        installments_data = contract_data.get("installments", []) or []
+        if not installments_data:
+            continue
+        valid.append((contract_data, installments_data))
 
-        # Find existing contract by reference
-        stmt = select(Contract).where(Contract.reference == reference)
-        existing = await session.execute(stmt)
-        contract = existing.scalar_one_or_none()
+    if not valid:
+        return result
 
+    refs = [contract_data["reference"] for contract_data, _ in valid]
+    rows = await session.execute(select(Contract).where(Contract.reference.in_(refs)))
+    contracts_by_ref = {contract.reference: contract for contract in rows.scalars()}
+
+    contract_ids = [contract.id for contract in contracts_by_ref.values()]
+    existing_installments: Dict[Tuple[int, date], Installment] = {}
+    if contract_ids:
+        rows = await session.execute(
+            select(Installment).where(Installment.contract_id.in_(contract_ids))
+        )
+        existing_installments = {
+            (inst.contract_id, inst.due_month): inst for inst in rows.scalars()
+        }
+
+    for contract_data, installments_data in valid:
+        reference = contract_data["reference"]
+        contract = contracts_by_ref.get(reference)
         if contract is None:
             result.errors.append(f"Contract with reference '{reference}' not found in database")
             continue
 
-        installments_data = contract_data.get("installments", [])
-        if not installments_data:
-            continue
-
-        # Upsert installments
         inst_result = await _upsert_installments(
-            session, contract.id, installments_data, upload_id, as_of=as_of
+            session,
+            contract.id,
+            installments_data,
+            upload_id,
+            as_of=as_of,
+            existing=existing_installments,
         )
         result.installments_created += inst_result.created
         result.installments_updated += inst_result.updated

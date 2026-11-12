@@ -83,7 +83,12 @@ The script will:
 3. Start PostgreSQL, wait for it to be healthy
 4. Run Alembic database migrations automatically
 5. Start the backend (4 Uvicorn workers) and frontend
-6. Verify service health
+6. Restart the TLS reverse proxy (if `docker-compose.tls.yml` is present) so nginx re-resolves the new container IPs
+7. Verify service health
+
+> **TLS proxy:** the public HTTPS proxy lives in `docker-compose.tls.yml`, which is server-side only.
+> `deploy.sh` includes it automatically when the file exists. Keep that file in the repo (it holds no
+> secrets, only config/cert paths) so the proxy is never left out of a deploy.
 
 ### Step 4: Verify the deployment
 
@@ -216,6 +221,6 @@ sudo systemctl stop finance-automation
 |---|---|---|
 | `Required variable ... not set` | Missing values in `.env.prod` | Edit `.env.prod` and ensure no values say `CHANGE_ME` |
 | Database connection failed | PostgreSQL not ready yet | Check `docker compose -f docker-compose.prod.yml logs postgres` |
-| 502 Bad Gateway | Backend is starting or crashed | Check `docker compose -f docker-compose.prod.yml logs backend` |
+| 502 Bad Gateway | Backend is starting/crashed, or the proxy cached an old container IP after a redeploy | Check `docker compose -f docker-compose.prod.yml logs backend`; if the app answers on `localhost:8000`, restart the proxy: `docker restart finance-proxy-prod` (or rerun `./deploy.sh`) |
 | Migration failed | Schema mismatch | Run `docker compose -f docker-compose.prod.yml exec backend alembic current` |
 | Upload fails with 413 | File too large (>50MB) | Adjust `MAX_UPLOAD_SIZE_MB` in `.env.prod` and `client_max_body_size` in nginx config |

@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     COOKIE_SAMESITE: str = "lax"  # lax or strict
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174"  # Comma-separated
 
+    # Public site address. DOMAIN is passed by docker-compose; in production the
+    # login link in emails becomes https://<DOMAIN>. FRONTEND_URL overrides it.
+    DOMAIN: str = "localhost"
+    FRONTEND_URL: Optional[str] = None
+
     # File Upload
     UPLOAD_DIR: Path = Path("./uploads")
     MAX_UPLOAD_SIZE_MB: int = 50
@@ -75,6 +80,20 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def frontend_url(self) -> str:
+        """Public frontend base URL, used in outgoing emails."""
+        if self.FRONTEND_URL:
+            return self.FRONTEND_URL.rstrip("/")
+        if self.is_production:
+            return f"https://{self.DOMAIN}"
+        return "http://localhost:5174"
+
+    @property
+    def login_url(self) -> str:
+        """Login page URL, used in outgoing emails."""
+        return f"{self.frontend_url}/login"
 
 
 @lru_cache
