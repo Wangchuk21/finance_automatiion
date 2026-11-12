@@ -19,8 +19,17 @@ import {
   Loader2,
   RotateCcw,
   Search,
+  CheckCircle,
   X,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -897,6 +906,12 @@ export function ContractsPage() {
           loading={detailLoading}
           error={detailError}
           onClose={closeDetail}
+          onContractClosed={(closedId) => {
+            // Update local detail state
+            setDetail((prev) => (prev && prev.id === closedId ? { ...prev, status: "closed" } : prev));
+            // Refresh list
+            setRefreshKey((k) => k + 1);
+          }}
         />
       )}
     </div>
@@ -1016,13 +1031,54 @@ function ContractDetailDrawer({
   loading,
   error,
   onClose,
+  onContractClosed,
 }: {
   contract: ContractListItem | null;
   installments: ContractInstallment[] | null;
   loading: boolean;
   error: string | null;
   onClose: () => void;
+  onContractClosed: (id: number) => void;
 }) {
+  const [closeDialogOpen, setCloseDialogOpen] = React.useState(false);
+  const [confirmCode, setConfirmCode] = React.useState("");
+  const [closeReason, setCloseReason] = React.useState("completed");
+  const [closeNote, setCloseNote] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+
+  const handleCloseContract = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!contract) return;
+    if (!confirmCode.trim()) {
+      setSubmitError("Please enter the confirmation code");
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError(null);
+
+    try {
+      await contractsApi.closeContract(contract.id, {
+        code: confirmCode.trim(),
+        reason: closeReason,
+        note: closeNote.trim() || undefined,
+      });
+
+      onContractClosed(contract.id);
+      setCloseDialogOpen(false);
+      setConfirmCode("");
+      setCloseNote("");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to close contract";
+      setSubmitError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const isClosed = contract?.status.toLowerCase() === "closed";
+
   return (
     <div className="fixed inset-0 z-50">
       <div
@@ -1053,15 +1109,124 @@ function ContractDetailDrawer({
               </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1.5 text-text-secondary hover:bg-neutral-light hover:text-text-primary"
-            aria-label="Close contract details"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {contract && !isClosed && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 border-border text-xs font-medium text-text-primary hover:bg-neutral-light hover:text-critical"
+                onClick={() => {
+                  setSubmitError(null);
+                  setConfirmCode("");
+                  setCloseNote("");
+                  setCloseDialogOpen(true);
+                }}
+              >
+                <CheckCircle className="h-3.5 w-3.5 text-success" />
+                Close Contract
+              </Button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1.5 text-text-secondary hover:bg-neutral-light hover:text-text-primary"
+              aria-label="Close contract details"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
+
+        {/* Close Contract Modal Dialog */}
+        <Dialog open={closeDialogOpen} onOpenChange={setCloseDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Close Contract</DialogTitle>
+              <DialogDescription>
+                Mark contract <span className="font-semibold text-text-primary">{contract?.reference}</span> ({contract?.customer}) as Closed.
+              </DialogDescription>
+            </DialogHeader>
+
+            <form onSubmit={handleCloseContract} className="space-y-4 py-2">
+              {submitError && (
+                <div className="rounded-md bg-critical-light/20 p-3 text-xs text-critical">
+                  {submitError}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  Closure Reason <span className="text-critical">*</span>
+                </label>
+                <select
+                  value={closeReason}
+                  onChange={(e) => setCloseReason(e.target.value)}
+                  className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="completed">Completed / Fully Paid</option>
+                  <option value="manual_close">Manual Closure</option>
+                  <option value="early_settlement">Early Settlement</option>
+                  <option value="written_off">Written Off</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  Confirmation Code <span className="text-critical">*</span>
+                </label>
+                <Input
+                  type="password"
+                  placeholder="Enter temporary confirmation code"
+                  value={confirmCode}
+                  onChange={(e) => setConfirmCode(e.target.value)}
+                  className="font-mono text-sm"
+                  autoFocus
+                />
+                <p className="text-[11px] text-text-secondary">
+                  Authorized confirmation code required for contract closure.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  Remarks / Note (Optional)
+                </label>
+                <textarea
+                  value={closeNote}
+                  onChange={(e) => setCloseNote(e.target.value)}
+                  placeholder="e.g. Paid in full via bank transfer, receipt #12345"
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+
+              <DialogFooter className="pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCloseDialogOpen(false)}
+                  disabled={submitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting || !confirmCode.trim()}
+                  className="gap-2"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Closing…
+                    </>
+                  ) : (
+                    "Confirm Closure"
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
           {loading ? (
