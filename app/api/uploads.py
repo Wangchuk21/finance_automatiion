@@ -111,15 +111,21 @@ async def create_upload(
     # Calculate checksum
     checksum = calculate_file_checksum_from_bytes(file_content)
 
-    # Check for duplicate
+    # Check for duplicate confirmed upload (or replace unconfirmed pending upload)
     existing = await session.execute(
         select(Upload).where(Upload.checksum == checksum)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="File with identical content already uploaded"
-        )
+    existing_upload = existing.scalar_one_or_none()
+    if existing_upload:
+        if existing_upload.status == UploadStatus.CONFIRMED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="File with identical content already uploaded and confirmed"
+            )
+        else:
+            # Clean up old unconfirmed upload record so user can re-upload cleanly
+            await session.delete(existing_upload)
+            await session.flush()
 
     # Validate upload rules
     from app.importer.comparison import get_last_confirmed_upload, validate_upload_rules
@@ -623,15 +629,21 @@ async def create_customer_upload(
     # Calculate checksum
     checksum = calculate_file_checksum_from_bytes(file_content)
 
-    # Check for duplicate
+    # Check for duplicate confirmed upload (or replace unconfirmed pending upload)
     existing = await session.execute(
         select(Upload).where(Upload.checksum == checksum)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="File with identical content already uploaded"
-        )
+    existing_upload = existing.scalar_one_or_none()
+    if existing_upload:
+        if existing_upload.status == UploadStatus.CONFIRMED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="File with identical content already uploaded and confirmed"
+            )
+        else:
+            # Clean up old unconfirmed upload record so user can re-upload cleanly
+            await session.delete(existing_upload)
+            await session.flush()
 
     # Save file temporarily
     temp_path = UPLOAD_DIR / f"temp_cust_{checksum}{file_ext}"
@@ -860,15 +872,21 @@ async def create_payment_upload(
     # Calculate checksum
     checksum = calculate_file_checksum_from_bytes(file_content)
 
-    # Check for duplicate
+    # Check for duplicate confirmed upload (or replace unconfirmed pending upload)
     existing = await session.execute(
         select(Upload).where(Upload.checksum == checksum)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="File with identical content already uploaded"
-        )
+    existing_upload = existing.scalar_one_or_none()
+    if existing_upload:
+        if existing_upload.status == UploadStatus.CONFIRMED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="File with identical content already uploaded and confirmed"
+            )
+        else:
+            # Clean up old unconfirmed upload record so user can re-upload cleanly
+            await session.delete(existing_upload)
+            await session.flush()
 
     # Save file temporarily
     temp_path = UPLOAD_DIR / f"temp_pay_{checksum}{file_ext}"
