@@ -428,6 +428,29 @@ export function ContractsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
+              <div className="space-y-2 rounded-lg border border-border bg-neutral-light/40 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                  Filtered summary
+                </p>
+                <SummaryRow
+                  label="Total Receivable"
+                  value={`Nu. ${formatNumber(summary?.outstanding ?? 0)}`}
+                />
+                <SummaryRow label="Contracts" value={formatNumber(summary?.contracts ?? 0)} />
+                <SummaryRow
+                  label="Monthly EMI"
+                  value={`Nu. ${formatNumber(summary?.monthly_deduction ?? 0)}`}
+                />
+                <SummaryRow
+                  label="Collected"
+                  value={`Nu. ${formatNumber(summary?.collected ?? 0)}`}
+                />
+                <SummaryRow
+                  label="Balance Due"
+                  value={`Nu. ${formatNumber(summary?.balance_due ?? 0)}`}
+                />
+              </div>
+
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-secondary" />
                 <Input
@@ -625,29 +648,6 @@ export function ContractsPage() {
                   <span className="text-sm text-text-secondary">Payment cycle ended but still due</span>
                 </label>
               </FilterField>
-
-              <div className="space-y-2 rounded-lg border border-border bg-neutral-light/40 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-                  Filtered summary
-                </p>
-                <SummaryRow label="Contracts" value={formatNumber(summary?.contracts ?? 0)} />
-                <SummaryRow
-                  label="Monthly EMI"
-                  value={`Nu. ${formatNumber(summary?.monthly_deduction ?? 0)}`}
-                />
-                <SummaryRow
-                  label="Total Receivable"
-                  value={`Nu. ${formatNumber(summary?.outstanding ?? 0)}`}
-                />
-                <SummaryRow
-                  label="Collected"
-                  value={`Nu. ${formatNumber(summary?.collected ?? 0)}`}
-                />
-                <SummaryRow
-                  label="Balance Due"
-                  value={`Nu. ${formatNumber(summary?.balance_due ?? 0)}`}
-                />
-              </div>
 
               <div className="space-y-2">
                 <Button
