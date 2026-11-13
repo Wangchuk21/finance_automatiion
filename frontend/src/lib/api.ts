@@ -148,6 +148,7 @@ export interface ContractListItem {
   monthly_deduction: number;
   sales_amount: number;
   gst: number;
+  receivable: number;
   received: number;
   collected: number;
   total_due: number;
@@ -179,6 +180,7 @@ export interface ContractUpdateRequest {
 export interface ContractSummary {
   contracts: number;
   monthly_deduction: number;
+  receivable: number;
   outstanding: number;
   collected: number;
   balance_due: number;

@@ -434,7 +434,7 @@ export function ContractsPage() {
                 </p>
                 <SummaryRow
                   label="Total Receivable"
-                  value={`Nu. ${formatNumber(summary?.outstanding ?? 0)}`}
+                  value={`Nu. ${formatNumber(summary?.receivable ?? 0)}`}
                 />
                 <SummaryRow label="Contracts" value={formatNumber(summary?.contracts ?? 0)} />
                 <SummaryRow
@@ -764,6 +764,15 @@ export function ContractsPage() {
                           title="Monthly EMI and remaining months (outstanding ÷ monthly EMI, capped at total tenor)"
                         />
                         <SortableHead
+                          label="Receivable"
+                          sortKey="receivable"
+                          sort={sort}
+                          order={order}
+                          onSort={toggleSort}
+                          align="right"
+                          title="Total contract value: Sales + GST"
+                        />
+                        <SortableHead
                           label="Outstanding"
                           sortKey="outstanding"
                           sort={sort}
@@ -846,6 +855,9 @@ export function ContractsPage() {
                               </div>
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right tabular-nums">
+                              Nu. {formatNumber(contract.receivable)}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-right tabular-nums">
                               Nu. {formatNumber(contract.outstanding)}
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right tabular-nums text-success">
@@ -875,6 +887,9 @@ export function ContractsPage() {
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">
                           Nu. {formatNumber(summary?.monthly_deduction ?? 0)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums">
+                          Nu. {formatNumber(summary?.receivable ?? 0)}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">
                           Nu. {formatNumber(summary?.outstanding ?? 0)}
@@ -1302,6 +1317,7 @@ function ContractDetailDrawer({
           ) : contract ? (
             <div className="space-y-6">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <DetailMetric label="Receivable" value={`Nu. ${formatNumber(contract.receivable)}`} />
                 <DetailMetric label="Outstanding" value={`Nu. ${formatNumber(contract.outstanding)}`} />
                 <DetailMetric label="Collected" value={`Nu. ${formatNumber(contract.collected)}`} tone="success" />
                 <DetailMetric label="Balance Due" value={`Nu. ${formatNumber(contract.balance_due)}`} tone="critical" />

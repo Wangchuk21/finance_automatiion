@@ -34,6 +34,7 @@ SORT_KEYS = {
     "monthly_deduction",
     "emi_months",
     "emi_left",
+    "receivable",
     "outstanding",
     "collected",
     "balance_due",
@@ -127,6 +128,7 @@ def _serialize_contract(
         "monthly_deduction": float(contract.monthly_deduction or 0),
         "sales_amount": float(sales),
         "gst": float(gst),
+        "receivable": float(sales + gst),
         "received": float(received_value),
         "collected": float(received_value),
         "total_due": float(total_due_value),
@@ -302,6 +304,7 @@ async def list_contracts(
     summary = {
         "contracts": len(items),
         "monthly_deduction": sum(item["monthly_deduction"] for item in items),
+        "receivable": sum(item["receivable"] for item in items),
         "outstanding": sum(item["outstanding"] for item in items),
         "collected": sum(item["collected"] for item in items),
         "balance_due": sum(item["balance_due"] for item in items),

@@ -173,6 +173,7 @@ async def test_contracts_api_e2e():
             assert body["summary"] == {
                 "contracts": 3,
                 "monthly_deduction": 3500.0,
+                "receivable": 13500.0,
                 "outstanding": 10000.0,
                 "collected": 3500.0,
                 "balance_due": 1000.0,
@@ -187,6 +188,7 @@ async def test_contracts_api_e2e():
             alice = next(item for item in body["items"] if item["reference"] == "CON-1")
             assert alice["customer"] == "Alice"
             assert alice["months_left"] == 4
+            assert alice["receivable"] == 6000.0
             assert alice["outstanding"] == 4000.0
             assert alice["collected"] == 2000.0
             assert alice["balance_due"] == 1000.0
@@ -358,6 +360,8 @@ async def test_contracts_api_e2e():
             assert updated["end_date"] == IN_TWO_MONTHS.isoformat()
             # Collected comes from installments and is unchanged (2000).
             assert updated["collected"] == 2000.0
+            # Receivable is the edited Sales + GST: 8000 + 200.
+            assert updated["receivable"] == 8200.0
             # Outstanding recalculated: 8000 + 200 - 2000.
             assert updated["outstanding"] == 6200.0
             # Balance due still comes from the original installment schedule.
