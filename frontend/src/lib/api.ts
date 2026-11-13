@@ -158,6 +158,24 @@ export interface ContractListItem {
   status: string;
 }
 
+export interface ContractUpdateRequest {
+  customer?: string | null;
+  cid?: string | null;
+  mobile?: string | null;
+  item?: string | null;
+  brand?: string | null;
+  region?: string | null;
+  cost_center?: string | null;
+  ministry_agency?: string | null;
+  payment_type?: string | null;
+  emi_months?: number | null;
+  monthly_deduction?: number | null;
+  sales_amount?: number | null;
+  gst?: number | null;
+  start_date?: string | null;
+  end_date?: string | null;
+}
+
 export interface ContractSummary {
   contracts: number;
   monthly_deduction: number;
@@ -497,6 +515,16 @@ export const contractsApi = {
 
   async get(id: number): Promise<ContractListItem> {
     return fetchJson<ContractListItem>(`/contracts/${id}`);
+  },
+
+  async update(
+    id: number,
+    data: ContractUpdateRequest
+  ): Promise<ContractListItem> {
+    return fetchJson<ContractListItem>(`/contracts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
   },
 
   async getInstallments(contractId: number): Promise<ContractInstallment[]> {

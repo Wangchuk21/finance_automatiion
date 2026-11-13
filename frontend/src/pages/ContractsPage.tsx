@@ -17,6 +17,7 @@ import {
   FileText,
   Filter,
   Loader2,
+  Pencil,
   RotateCcw,
   Search,
   CheckCircle,
@@ -50,7 +51,9 @@ import {
   type ContractInstallment,
   type ContractListItem,
   type ContractListResponse,
+  type ContractUpdateRequest,
 } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { cn, formatDate, formatMonthYear, formatNumber, getStatusBadgeVariant } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -118,6 +121,9 @@ function currentQuickView({
 }
 
 export function ContractsPage() {
+  const { user } = useAuth();
+  const canEditContracts = user?.role === "admin";
+
   const [searchInput, setSearchInput] = React.useState("");
   const [search, setSearch] = React.useState("");
   const [state, setState] = React.useState("");
@@ -630,7 +636,7 @@ export function ContractsPage() {
                   value={`Nu. ${formatNumber(summary?.monthly_deduction ?? 0)}`}
                 />
                 <SummaryRow
-                  label="Outstanding"
+                  label="Total Receivable"
                   value={`Nu. ${formatNumber(summary?.outstanding ?? 0)}`}
                 />
                 <SummaryRow
@@ -930,11 +936,16 @@ export function ContractsPage() {
           installments={installments}
           loading={detailLoading}
           error={detailError}
+          canEdit={canEditContracts}
           onClose={closeDetail}
           onContractClosed={(closedId) => {
             // Update local detail state
             setDetail((prev) => (prev && prev.id === closedId ? { ...prev, status: "closed" } : prev));
             // Refresh list
+            setRefreshKey((k) => k + 1);
+          }}
+          onContractUpdated={(updated) => {
+            setDetail(updated);
             setRefreshKey((k) => k + 1);
           }}
         />
@@ -1055,17 +1066,22 @@ function ContractDetailDrawer({
   installments,
   loading,
   error,
+  canEdit,
   onClose,
   onContractClosed,
+  onContractUpdated,
 }: {
   contract: ContractListItem | null;
   installments: ContractInstallment[] | null;
   loading: boolean;
   error: string | null;
+  canEdit: boolean;
   onClose: () => void;
   onContractClosed: (id: number) => void;
+  onContractUpdated: (contract: ContractListItem) => void;
 }) {
   const [closeDialogOpen, setCloseDialogOpen] = React.useState(false);
+  const [editDialogOpen, setEditDialogOpen] = React.useState(false);
   const [confirmCode, setConfirmCode] = React.useState("");
   const [closeReason, setCloseReason] = React.useState("completed");
   const [closeNote, setCloseNote] = React.useState("");
@@ -1135,6 +1151,17 @@ function ContractDetailDrawer({
             )}
           </div>
           <div className="flex items-center gap-2">
+            {contract && canEdit && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 border-border text-xs font-medium text-text-primary hover:bg-neutral-light"
+                onClick={() => setEditDialogOpen(true)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Edit
+              </Button>
+            )}
             {contract && !isClosed && (
               <Button
                 variant="outline"
@@ -1253,6 +1280,16 @@ function ContractDetailDrawer({
           </DialogContent>
         </Dialog>
 
+        <EditContractDialog
+          open={editDialogOpen}
+          contract={contract}
+          onOpenChange={setEditDialogOpen}
+          onSaved={(updated) => {
+            onContractUpdated(updated);
+            setEditDialogOpen(false);
+          }}
+        />
+
         <div className="flex-1 overflow-y-auto px-6 py-5">
           {loading ? (
             <div className="space-y-4">
@@ -1365,6 +1402,301 @@ function ContractDetailDrawer({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+type EditContractForm = {
+  customer: string;
+  cid: string;
+  mobile: string;
+  item: string;
+  brand: string;
+  region: string;
+  cost_center: string;
+  ministry_agency: string;
+  payment_type: string;
+  emi_months: string;
+  monthly_deduction: string;
+  sales_amount: string;
+  gst: string;
+  start_date: string;
+  end_date: string;
+};
+
+const EMPTY_EDIT_FORM: EditContractForm = {
+  customer: "",
+  cid: "",
+  mobile: "",
+  item: "",
+  brand: "",
+  region: "",
+  cost_center: "",
+  ministry_agency: "",
+  payment_type: "",
+  emi_months: "",
+  monthly_deduction: "",
+  sales_amount: "",
+  gst: "",
+  start_date: "",
+  end_date: "",
+};
+
+function contractToEditForm(contract: ContractListItem): EditContractForm {
+  const value = (input: unknown) => (input === null || input === undefined ? "" : String(input));
+  return {
+    customer: value(contract.customer),
+    cid: value(contract.cid),
+    mobile: value(contract.mobile),
+    item: value(contract.item),
+    brand: value(contract.brand),
+    region: value(contract.region),
+    cost_center: value(contract.cost_center),
+    ministry_agency: value(contract.ministry_agency),
+    payment_type: value(contract.payment_type),
+    emi_months: value(contract.emi_months),
+    monthly_deduction: value(contract.monthly_deduction),
+    sales_amount: value(contract.sales_amount),
+    gst: value(contract.gst),
+    start_date: value(contract.start_date),
+    end_date: value(contract.end_date),
+  };
+}
+
+function EditContractDialog({
+  open,
+  contract,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  contract: ContractListItem | null;
+  onOpenChange: (open: boolean) => void;
+  onSaved: (contract: ContractListItem) => void;
+}) {
+  const [form, setForm] = React.useState<EditContractForm>(EMPTY_EDIT_FORM);
+  const [saving, setSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (open && contract) {
+      setForm(contractToEditForm(contract));
+      setSaveError(null);
+    }
+  }, [open, contract]);
+
+  const setField =
+    (field: keyof EditContractForm) =>
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const value = event.target.value;
+      setForm((prev) => ({ ...prev, [field]: value }));
+    };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!contract) return;
+
+    if (!form.customer.trim()) {
+      setSaveError("Customer name is required.");
+      return;
+    }
+
+    const text = (value: string) => {
+      const trimmed = value.trim();
+      return trimmed === "" ? null : trimmed;
+    };
+    const money = (value: string, label: string): number | null => {
+      if (!value.trim()) return null;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`${label} must be a non-negative number.`);
+      }
+      return parsed;
+    };
+    const wholeNumber = (value: string, label: string): number | null => {
+      if (!value.trim()) return null;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        throw new Error(`${label} must be a non-negative whole number.`);
+      }
+      return parsed;
+    };
+
+    setSaveError(null);
+    let payload: ContractUpdateRequest;
+    try {
+      payload = {
+        customer: form.customer.trim(),
+        cid: text(form.cid),
+        mobile: text(form.mobile),
+        item: text(form.item),
+        brand: text(form.brand),
+        region: text(form.region),
+        cost_center: text(form.cost_center),
+        ministry_agency: text(form.ministry_agency),
+        payment_type: text(form.payment_type),
+        emi_months: wholeNumber(form.emi_months, "EMI months"),
+        monthly_deduction: money(form.monthly_deduction, "Monthly EMI"),
+        sales_amount: money(form.sales_amount, "Sales amount"),
+        gst: money(form.gst, "GST"),
+        start_date: form.start_date || null,
+        end_date: form.end_date || null,
+      };
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Invalid value.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const updated = await contractsApi.update(contract.id, payload);
+      onSaved(updated);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to update contract.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!saving) onOpenChange(next);
+      }}
+    >
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Edit contract</DialogTitle>
+          <DialogDescription>
+            Update the static contract information. Installments and collected amounts are not
+            changed.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {saveError && (
+            <div className="rounded-md bg-critical-light/20 p-3 text-xs text-critical">
+              {saveError}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <EditField label="Customer" required>
+              <Input value={form.customer} onChange={setField("customer")} autoFocus />
+            </EditField>
+            <EditField label="CID">
+              <Input value={form.cid} onChange={setField("cid")} />
+            </EditField>
+            <EditField label="Mobile">
+              <Input value={form.mobile} onChange={setField("mobile")} />
+            </EditField>
+            <EditField label="Payment type">
+              <Input value={form.payment_type} onChange={setField("payment_type")} />
+            </EditField>
+            <EditField label="Item">
+              <Input value={form.item} onChange={setField("item")} />
+            </EditField>
+            <EditField label="Brand">
+              <Input value={form.brand} onChange={setField("brand")} />
+            </EditField>
+            <EditField label="Region">
+              <Input value={form.region} onChange={setField("region")} />
+            </EditField>
+            <EditField label="Cost center">
+              <Input value={form.cost_center} onChange={setField("cost_center")} />
+            </EditField>
+            <div className="sm:col-span-2">
+              <EditField label="Ministry / Agency">
+                <Input value={form.ministry_agency} onChange={setField("ministry_agency")} />
+              </EditField>
+            </div>
+            <EditField label="EMI months">
+              <Input
+                type="number"
+                min={0}
+                step={1}
+                value={form.emi_months}
+                onChange={setField("emi_months")}
+              />
+            </EditField>
+            <EditField label="Monthly EMI (Nu.)">
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={form.monthly_deduction}
+                onChange={setField("monthly_deduction")}
+              />
+            </EditField>
+            <EditField label="Sales amount (Nu.)">
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={form.sales_amount}
+                onChange={setField("sales_amount")}
+              />
+            </EditField>
+            <EditField label="GST (Nu.)">
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={form.gst}
+                onChange={setField("gst")}
+              />
+            </EditField>
+            <EditField label="Start date">
+              <Input type="date" value={form.start_date} onChange={setField("start_date")} />
+            </EditField>
+            <EditField label="End date">
+              <Input type="date" value={form.end_date} onChange={setField("end_date")} />
+            </EditField>
+          </div>
+
+          <DialogFooter className="pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving} className="gap-2">
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Saving…
+                </>
+              ) : (
+                "Save changes"
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditField({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-xs font-medium text-text-secondary">
+        {label}
+        {required && <span className="ml-1 text-critical">*</span>}
+      </label>
+      {children}
     </div>
   );
 }

@@ -19,6 +19,7 @@ from app.core.confirm import verify_confirm_code
 from app.core.metrics import calculate_months_left
 from app.db.session import get_session
 from app.models import Contract, ContractClosure, ContractState, Installment, User, UserRole
+from app.schemas.contracts import ContractUpdateRequest
 from app.schemas.uploads import CloseContractRequest, CloseContractResponse
 
 logger = logging.getLogger(__name__)
@@ -375,16 +376,10 @@ async def contract_facets(
     }
 
 
-@router.get("/{contract_id}")
-async def get_contract(
-    contract_id: int,
-    session: AsyncSession = Depends(get_session),
-):
-    """Get one contract with its all-time financial summary."""
-    contract = await session.get(Contract, contract_id)
-    if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
-
+async def _contract_totals(
+    session: AsyncSession, contract_id: int
+) -> Tuple[Decimal, Decimal]:
+    """Return (received, total_due) summed across a contract's installments."""
     received = (
         await session.execute(
             select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
@@ -397,7 +392,76 @@ async def get_contract(
             .where(Installment.contract_id == contract_id)
         )
     ).scalar()
+    return received or Decimal("0"), total_due or Decimal("0")
 
+
+@router.get("/{contract_id}")
+async def get_contract(
+    contract_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get one contract with its all-time financial summary."""
+    contract = await session.get(Contract, contract_id)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    received, total_due = await _contract_totals(session, contract_id)
+    return _serialize_contract(contract, received, total_due)
+
+
+@router.patch("/{contract_id}")
+async def update_contract(
+    contract_id: int,
+    request: ContractUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Edit a contract's static information. Admin only.
+
+    Installments are not touched, so collected amounts and the schedule keep
+    their existing values. Outstanding is recalculated from the edited
+    sales amount / GST minus collected.
+    """
+    contract = await session.get(Contract, contract_id)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    updates = request.model_dump(exclude_unset=True)
+
+    # Trim text fields and store blank values as NULL.
+    text_fields = {
+        "customer",
+        "cid",
+        "mobile",
+        "item",
+        "brand",
+        "region",
+        "cost_center",
+        "ministry_agency",
+        "payment_type",
+    }
+    for field in text_fields & updates.keys():
+        value = updates[field]
+        if isinstance(value, str):
+            updates[field] = value.strip() or None
+
+    if "customer" in updates and not updates["customer"]:
+        raise HTTPException(status_code=422, detail="Customer cannot be empty")
+
+    start_date = updates.get("start_date", contract.start_date)
+    end_date = updates.get("end_date", contract.end_date)
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=422, detail="Start date cannot be after end date"
+        )
+
+    for field, value in updates.items():
+        setattr(contract, field, value)
+
+    await session.commit()
+    await session.refresh(contract)
+
+    received, total_due = await _contract_totals(session, contract_id)
     return _serialize_contract(contract, received, total_due)
 
 

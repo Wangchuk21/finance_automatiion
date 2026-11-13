@@ -6,15 +6,17 @@ Runs strictly against finance_test (never finance_automation).
 import os
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.auth import get_current_user as get_current_user_dep
 from app.db.session import Base, get_session
 from app.main import app
-from app.models import Contract, Installment, InstallmentStatus
+from app.models import Contract, Installment, InstallmentStatus, UserRole
 
 TEST_DB_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -311,7 +313,109 @@ async def test_contracts_api_e2e():
 
             resp = await client.get("/api/v1/contracts/999999/installments")
             assert resp.status_code == 404
+
+            # -------------------------------------------------------------
+            # Admin update (PATCH) — installments must be untouched
+            # -------------------------------------------------------------
+            admin = SimpleNamespace(role=UserRole.ADMIN)
+            app.dependency_overrides[get_current_user_dep] = lambda: admin
+
+            resp = await client.patch(
+                f"/api/v1/contracts/{c1_id}",
+                json={
+                    "customer": "  Alicia  ",
+                    "cid": "CID-NEW",
+                    "mobile": "17999999",
+                    "item": "Phone B",
+                    "brand": "Apple",
+                    "region": "Central Region",
+                    "cost_center": "Phuentsholing",
+                    "ministry_agency": "MOF",
+                    "payment_type": "External Installment",
+                    "emi_months": 8,
+                    "monthly_deduction": "1250.50",
+                    "sales_amount": "8000.00",
+                    "gst": "200.00",
+                    "start_date": TWO_MONTHS_AGO.isoformat(),
+                    "end_date": IN_TWO_MONTHS.isoformat(),
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            updated = resp.json()
+            assert updated["customer"] == "Alicia"
+            assert updated["cid"] == "CID-NEW"
+            assert updated["mobile"] == "17999999"
+            assert updated["item"] == "Phone B"
+            assert updated["brand"] == "Apple"
+            assert updated["region"] == "Central Region"
+            assert updated["cost_center"] == "Phuentsholing"
+            assert updated["ministry_agency"] == "MOF"
+            assert updated["emi_months"] == 8
+            assert updated["monthly_deduction"] == 1250.5
+            assert updated["sales_amount"] == 8000.0
+            assert updated["gst"] == 200.0
+            assert updated["start_date"] == TWO_MONTHS_AGO.isoformat()
+            assert updated["end_date"] == IN_TWO_MONTHS.isoformat()
+            # Collected comes from installments and is unchanged (2000).
+            assert updated["collected"] == 2000.0
+            # Outstanding recalculated: 8000 + 200 - 2000.
+            assert updated["outstanding"] == 6200.0
+            # Balance due still comes from the original installment schedule.
+            assert updated["balance_due"] == 1000.0
+
+            resp = await client.get(f"/api/v1/contracts/{c1_id}/installments")
+            assert resp.status_code == 200
+            schedule = resp.json()
+            assert len(schedule) == 3
+            assert sum(row["due_amount"] for row in schedule) == 3000.0
+            assert sum(row["received_amount"] for row in schedule) == 2000.0
+
+            # Blank text fields are stored as null/empty, not the literal "".
+            resp = await client.patch(
+                f"/api/v1/contracts/{c1_id}", json={"cid": "   ", "mobile": ""}
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["cid"] == ""
+            assert resp.json()["mobile"] == ""
+
+            # Invalid payloads are rejected.
+            resp = await client.patch(
+                f"/api/v1/contracts/{c1_id}", json={"customer": "   "}
+            )
+            assert resp.status_code == 422
+
+            resp = await client.patch(
+                f"/api/v1/contracts/{c1_id}",
+                json={
+                    "start_date": IN_TWO_MONTHS.isoformat(),
+                    "end_date": TWO_MONTHS_AGO.isoformat(),
+                },
+            )
+            assert resp.status_code == 422
+
+            resp = await client.patch(
+                f"/api/v1/contracts/{c1_id}", json={"references": "nope"}
+            )
+            assert resp.status_code == 422
+
+            resp = await client.patch(
+                "/api/v1/contracts/999999", json={"customer": "Nobody"}
+            )
+            assert resp.status_code == 404
+
+            # Non-admins are forbidden and cannot change anything.
+            for role in (UserRole.FINANCE_UPLOADER, UserRole.VIEWER):
+                app.dependency_overrides[get_current_user_dep] = lambda role=role: SimpleNamespace(role=role)
+                resp = await client.patch(
+                    f"/api/v1/contracts/{c1_id}", json={"customer": "Hacked"}
+                )
+                assert resp.status_code == 403
+
+            app.dependency_overrides.pop(get_current_user_dep, None)
+            resp = await client.get(f"/api/v1/contracts/{c1_id}")
+            assert resp.json()["customer"] == "Alicia"
     finally:
+        app.dependency_overrides.pop(get_current_user_dep, None)
         app.dependency_overrides.pop(get_session, None)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
