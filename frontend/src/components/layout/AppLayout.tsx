@@ -19,7 +19,7 @@ export function AppLayout() {
         )}
       >
         <Header onMenuClick={() => setSidebarCollapsed(!sidebarCollapsed)} asOfDate="Oct 2024" />
-        <main className="p-6 max-w-[1400px]">
+        <main className="w-full p-6">
           <Outlet />
         </main>
       </div>
