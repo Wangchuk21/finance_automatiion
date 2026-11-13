@@ -16,7 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user, require_role
 from app.core.confirm import verify_confirm_code
-from app.core.installments import determine_installment_status
+from app.core.installments import (
+    determine_installment_status,
+    installment_balance_due_expr,
+)
 from app.core.metrics import calculate_months_left
 from app.db.session import get_session
 from app.models import Contract, ContractClosure, ContractState, Installment, User, UserRole
@@ -102,13 +105,15 @@ def _serialize_contract(
     contract: Contract,
     received: Optional[Decimal],
     total_due: Optional[Decimal],
+    balance_due: Optional[Decimal] = None,
 ) -> dict:
     received_value = Decimal(received or 0)
     total_due_value = Decimal(total_due or 0)
     sales = Decimal(contract.sales_amount or 0)
     gst = Decimal(contract.gst or 0)
     outstanding = max(Decimal("0"), sales + gst - received_value)
-    balance_due = max(Decimal("0"), total_due_value - received_value)
+    if balance_due is None:
+        balance_due = max(Decimal("0"), total_due_value - received_value)
     outstanding_value = float(outstanding)
     return {
         "id": contract.id,
@@ -251,19 +256,26 @@ async def list_contracts(
         .correlate(Contract)
         .scalar_subquery()
     )
+    balance_due_subq = (
+        select(installment_balance_due_expr())
+        .where(Installment.contract_id == Contract.id)
+        .correlate(Contract)
+        .scalar_subquery()
+    )
 
     stmt = (
         select(
             Contract,
             received_subq.label("received"),
             total_due_subq.label("total_due"),
+            balance_due_subq.label("balance_due"),
         )
         .where(*conditions)
     )
 
     rows = (await session.execute(stmt)).all()
     items = [
-        _serialize_contract(row[0], row.received, row.total_due)
+        _serialize_contract(row[0], row.received, row.total_due, row.balance_due)
         for row in rows
     ]
 
@@ -382,8 +394,8 @@ async def contract_facets(
 
 async def _contract_totals(
     session: AsyncSession, contract_id: int
-) -> Tuple[Decimal, Decimal]:
-    """Return (received, total_due) summed across a contract's installments."""
+) -> Tuple[Decimal, Decimal, Decimal]:
+    """Return (received, total_due, balance_due) summed across installments."""
     received = (
         await session.execute(
             select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
@@ -396,7 +408,18 @@ async def _contract_totals(
             .where(Installment.contract_id == contract_id)
         )
     ).scalar()
-    return received or Decimal("0"), total_due or Decimal("0")
+    balance_due = (
+        await session.execute(
+            select(installment_balance_due_expr()).where(
+                Installment.contract_id == contract_id
+            )
+        )
+    ).scalar()
+    return (
+        received or Decimal("0"),
+        total_due or Decimal("0"),
+        balance_due or Decimal("0"),
+    )
 
 
 @router.get("/{contract_id}")
@@ -409,8 +432,8 @@ async def get_contract(
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    received, total_due = await _contract_totals(session, contract_id)
-    return _serialize_contract(contract, received, total_due)
+    received, total_due, balance_due = await _contract_totals(session, contract_id)
+    return _serialize_contract(contract, received, total_due, balance_due)
 
 
 @router.patch("/{contract_id}")
@@ -465,8 +488,8 @@ async def update_contract(
     await session.commit()
     await session.refresh(contract)
 
-    received, total_due = await _contract_totals(session, contract_id)
-    return _serialize_contract(contract, received, total_due)
+    received, total_due, balance_due = await _contract_totals(session, contract_id)
+    return _serialize_contract(contract, received, total_due, balance_due)
 
 
 @router.get("/{contract_id}/installments")
