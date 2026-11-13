@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user, require_role
 from app.core.confirm import verify_confirm_code
+from app.core.installments import determine_installment_status
 from app.core.metrics import calculate_months_left
 from app.db.session import get_session
 from app.models import Contract, ContractClosure, ContractState, Installment, User, UserRole
@@ -490,6 +491,14 @@ async def get_contract_installments(
     for installment in installments:
         due = Decimal(installment.due_amount or 0)
         received = Decimal(installment.received_amount or 0)
+        # Recompute the status on read so past unpaid months show as overdue
+        # even for rows imported before the rule was fixed.
+        status = determine_installment_status(
+            installment.due_amount,
+            received,
+            cell_status=installment.cell_status,
+            due_month=installment.due_month,
+        )
         data.append(
             {
                 "id": installment.id,
@@ -500,11 +509,7 @@ async def get_contract_installments(
                 "salary_amount": float(installment.salary_amount or 0),
                 "external_amount": float(installment.external_amount or 0),
                 "cell_status": installment.cell_status,
-                "status": (
-                    installment.status.value
-                    if hasattr(installment.status, "value")
-                    else str(installment.status)
-                ),
+                "status": status.value,
             }
         )
     return data

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Contract, Installment, InstallmentStatus, ContractState
+from app.core.installments import determine_installment_status
 from app.importer.column_map import parse_amount
 
 
@@ -29,30 +30,16 @@ def _determine_installment_status(
     received_amount: Decimal,
     cell_status: Optional[str],
     as_of: Optional[date] = None,
+    due_month: Optional[date] = None,
 ) -> InstallmentStatus:
-    """Determine installment status from amounts, cell_status, and date."""
-    if cell_status in ("not_received", "not_deducted"):
-        return InstallmentStatus.PENDING
-
-    if due_amount is None:
-        # Outside schedule: no due amount
-        if received_amount > Decimal("0"):
-            return InstallmentStatus.PAID
-        return InstallmentStatus.PENDING
-
-    if received_amount >= due_amount:
-        return InstallmentStatus.PAID
-    if received_amount > Decimal("0"):
-        return InstallmentStatus.PARTIAL
-
-    # Nothing received
-    today = as_of or date.today()
-    if due_amount > Decimal("0") and date(today.year, today.month, 1) > date(
-        today.year, today.month, 1
-    ):
-        # due_month is in the past
-        pass
-    return InstallmentStatus.PENDING
+    """Backward-compatible wrapper around the shared status rule."""
+    return determine_installment_status(
+        due_amount,
+        received_amount,
+        cell_status=cell_status,
+        as_of=as_of,
+        due_month=due_month,
+    )
 
 
 @dataclass
@@ -277,7 +264,9 @@ async def _upsert_installments(
         cell_status = inst_data.get("not_status") or inst_data.get("cell_status")
 
         # status
-        status = _determine_installment_status(due_amount, received_amount, cell_status, as_of)
+        status = _determine_installment_status(
+            due_amount, received_amount, cell_status, as_of, due_month=due_month
+        )
 
         # Check if installment exists (pre-fetched map when available)
         key = (contract_id, due_month)

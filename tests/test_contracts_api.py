@@ -424,3 +424,84 @@ async def test_contracts_api_e2e():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_installments_report_past_unpaid_month_as_overdue():
+    """An unpaid month is overdue even if its stored status is still pending.
+
+    This mirrors uploading October while September stayed unpaid: the row was
+    stored as ``PENDING`` at import time and must be recomputed on read.
+    """
+    engine = create_async_engine(TEST_DB_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with async_session() as s, s.begin():
+        contract = Contract(
+            reference="OVERDUE-1",
+            customer="Dawa",
+            emi_months=3,
+            monthly_deduction=Decimal("4660.00"),
+            sales_amount=Decimal("13980.00"),
+            gst=Decimal("0.00"),
+            start_date=TWO_MONTHS_AGO,
+            end_date=THIS_MONTH,
+        )
+        s.add(contract)
+        await s.flush()
+        s.add_all(
+            [
+                # Past month, nothing received, but stored as PENDING.
+                Installment(
+                    contract_id=contract.id,
+                    due_month=LAST_MONTH,
+                    due_amount=Decimal("4660.00"),
+                    received_amount=Decimal("0.00"),
+                    status=InstallmentStatus.PENDING,
+                    cell_status="not_received",
+                ),
+                # Current month has been paid.
+                Installment(
+                    contract_id=contract.id,
+                    due_month=THIS_MONTH,
+                    due_amount=Decimal("4660.00"),
+                    received_amount=Decimal("4660.00"),
+                    status=InstallmentStatus.PAID,
+                ),
+                # Partly received in a past month.
+                Installment(
+                    contract_id=contract.id,
+                    due_month=TWO_MONTHS_AGO,
+                    due_amount=Decimal("4660.00"),
+                    received_amount=Decimal("1000.00"),
+                    status=InstallmentStatus.PARTIAL,
+                ),
+            ]
+        )
+        contract_id = contract.id
+
+    async def override_get_session():
+        async with async_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(f"/api/v1/contracts/{contract_id}/installments")
+            assert resp.status_code == 200, resp.text
+            statuses = {row["due_month"]: row["status"] for row in resp.json()}
+
+        assert statuses[LAST_MONTH.isoformat()] == "overdue"
+        assert statuses[THIS_MONTH.isoformat()] == "paid"
+        assert statuses[TWO_MONTHS_AGO.isoformat()] == "partial"
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()

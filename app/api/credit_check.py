@@ -10,6 +10,7 @@ from sqlalchemy import func, select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
+from app.core.installments import determine_installment_status
 from app.db.session import get_session
 from app.models import Contract, ContractState, Installment, InstallmentStatus, User
 
@@ -207,9 +208,18 @@ async def check_customer_credit(
     
     # Installment analysis
     total_installments = len(installments)
-    paid_installments = sum(1 for i in installments if i.status == InstallmentStatus.PAID)
-    overdue_installments = sum(1 for i in installments if i.status == InstallmentStatus.OVERDUE)
-    partial_installments = sum(1 for i in installments if i.status == InstallmentStatus.PARTIAL)
+    statuses = [
+        determine_installment_status(
+            i.due_amount,
+            Decimal(i.received_amount or 0),
+            cell_status=i.cell_status,
+            due_month=i.due_month,
+        )
+        for i in installments
+    ]
+    paid_installments = sum(1 for s in statuses if s == InstallmentStatus.PAID)
+    overdue_installments = sum(1 for s in statuses if s == InstallmentStatus.OVERDUE)
+    partial_installments = sum(1 for s in statuses if s == InstallmentStatus.PARTIAL)
     
     payment_rate = paid_installments / total_installments if total_installments > 0 else 1.0
     
