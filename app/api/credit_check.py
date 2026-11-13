@@ -17,14 +17,6 @@ from app.models import Contract, ContractState, Installment, InstallmentStatus, 
 router = APIRouter(tags=["credit-check"])
 
 
-def _balance_due(installments) -> float:
-    """Sum of unpaid installment balances (overpayments are not netted)."""
-    return sum(
-        max(0.0, float(i.due_amount or 0) - float(i.received_amount or 0))
-        for i in installments
-    )
-
-
 class CreditScoreResponse(BaseModel):
     """Credit check response for a customer."""
     cid: str
@@ -199,7 +191,7 @@ async def check_customer_credit(
         # Total received for this contract
         contract_received = sum(float(i.received_amount or 0) for i in c_installments)
         # Balance due
-        contract_balance_due = _balance_due(c_installments)
+        contract_balance_due = max(0.0, contract_due - contract_received)
         # Outstanding (sales + GST - received)
         sales = float(c.sales_amount or 0)
         gst = float(c.gst or 0)
@@ -237,7 +229,7 @@ async def check_customer_credit(
         c_installments = [i for i in installments if i.contract_id == c.id]
         contract_due = sum(float(i.due_amount or 0) for i in c_installments)
         contract_received = sum(float(i.received_amount or 0) for i in c_installments)
-        contract_balance_due = _balance_due(c_installments)
+        contract_balance_due = max(0.0, contract_due - contract_received)
         if contract_balance_due > 0:
             overdue_contracts += 1
     
@@ -248,7 +240,7 @@ async def check_customer_credit(
             c_installments = [i for i in installments if i.contract_id == c.id]
             contract_due = sum(float(i.due_amount or 0) for i in c_installments)
             contract_received = sum(float(i.received_amount or 0) for i in c_installments)
-            contract_balance_due = _balance_due(c_installments)
+            contract_balance_due = max(0.0, contract_due - contract_received)
             if contract_balance_due > 0:
                 days = (date.today() - c.end_date).days
                 if days > max_days_overdue:
@@ -279,7 +271,7 @@ async def check_customer_credit(
         c_installments = [i for i in installments if i.contract_id == c.id]
         contract_due = sum(float(i.due_amount or 0) for i in c_installments)
         contract_received = sum(float(i.received_amount or 0) for i in c_installments)
-        contract_balance_due = _balance_due(c_installments)
+        contract_balance_due = max(0.0, contract_due - contract_received)
         
         sales = float(c.sales_amount or 0)
         gst = float(c.gst or 0)

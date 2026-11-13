@@ -9,32 +9,12 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func
-
-from app.models import Installment, InstallmentStatus
+from app.models import InstallmentStatus
 
 
 def month_start(value: date) -> date:
     """Return the first day of ``value``'s month."""
     return date(value.year, value.month, 1)
-
-
-def installment_balance_due_expr():
-    """SQL expression: sum of positive (due - received) per installment.
-
-    Overpayments in one month are not netted against unpaid months, so the
-    result always equals the sum of the balances shown in the schedule.
-    """
-    return func.coalesce(
-        func.sum(
-            func.greatest(
-                Decimal("0"),
-                func.coalesce(Installment.due_amount, Decimal("0"))
-                - func.coalesce(Installment.received_amount, Decimal("0")),
-            )
-        ),
-        Decimal("0"),
-    )
 
 
 def determine_installment_status(

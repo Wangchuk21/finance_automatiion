@@ -12,7 +12,6 @@ from sqlalchemy import func, select, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user, require_not_must_change_password
-from app.core.installments import installment_balance_due_expr
 from app.core.metrics import calculate_months_left
 from app.db.session import get_session
 from app.models import Contract, Installment, InstallmentStatus, ContractState, Upload, UploadStatus, User
@@ -228,13 +227,30 @@ async def get_kpis_data(
     )
     total_collected = (await session.execute(collected_stmt)).scalar() or Decimal("0")
 
-    # 3. Balance Due — SUM of MAX(0, due - received) per installment in period.
-    #    Overpayments in one month do not cancel unpaid months, so this always
-    #    matches the balances shown in the installment schedule.
-    balance_due_stmt = (
-        select(installment_balance_due_expr())
+    # 3. Balance Due — SUM per contract of MAX(0, total due - total received) in period.
+    #    This matches the Excel "Balance Due" column formula:
+    #    Balance Due = MAX(0, [EMI receivable] - [EMI Received]) = 4,961,670.80
+    contract_due_sub = (
+        select(
+            Installment.contract_id,
+            func.coalesce(func.sum(Installment.due_amount), 0).label("contract_due"),
+            func.coalesce(func.sum(Installment.received_amount), 0).label("contract_rec"),
+        )
         .join(Contract, Installment.contract_id == Contract.id)
         .where(*period_conds, past_due_cond)
+        .group_by(Installment.contract_id)
+        .subquery()
+    )
+    balance_due_stmt = select(
+        func.coalesce(
+            func.sum(
+                func.greatest(
+                    Decimal("0"),
+                    contract_due_sub.c.contract_due - contract_due_sub.c.contract_rec,
+                )
+            ),
+            Decimal("0"),
+        )
     )
     total_balance_due = (await session.execute(balance_due_stmt)).scalar() or Decimal("0")
 
@@ -376,8 +392,8 @@ async def get_regions_data(
         select(
             Contract.region,
             Installment.contract_id,
+            func.coalesce(func.sum(Installment.due_amount), 0).label("contract_due"),
             func.coalesce(func.sum(Installment.received_amount), 0).label("contract_rec"),
-            installment_balance_due_expr().label("contract_balance"),
         )
         .join(Contract, Installment.contract_id == Contract.id)
         .where(Contract.region.isnot(None), *period_conds)
@@ -389,7 +405,9 @@ async def get_regions_data(
             perf_sub.c.region,
             func.coalesce(func.sum(perf_sub.c.contract_rec), 0).label("total_received"),
             func.coalesce(
-                func.sum(perf_sub.c.contract_balance),
+                func.sum(
+                    func.greatest(Decimal("0"), perf_sub.c.contract_due - perf_sub.c.contract_rec)
+                ),
                 Decimal("0"),
             ).label("total_balance_due"),
         )
@@ -468,8 +486,8 @@ async def get_cost_centers_data(
         select(
             cc_label.label("cost_center"),
             Installment.contract_id,
+            func.coalesce(func.sum(Installment.due_amount), 0).label("contract_due"),
             func.coalesce(func.sum(Installment.received_amount), 0).label("contract_rec"),
-            installment_balance_due_expr().label("contract_balance"),
         )
         .join(Contract, Installment.contract_id == Contract.id)
         .where(*period_conds)
@@ -481,7 +499,9 @@ async def get_cost_centers_data(
             perf_sub.c.cost_center,
             func.coalesce(func.sum(perf_sub.c.contract_rec), 0).label("total_received"),
             func.coalesce(
-                func.sum(perf_sub.c.contract_balance),
+                func.sum(
+                    func.greatest(Decimal("0"), perf_sub.c.contract_due - perf_sub.c.contract_rec)
+                ),
                 Decimal("0"),
             ).label("total_balance_due"),
         )
@@ -540,10 +560,9 @@ async def get_cost_center_contracts_data(
         .where(Installment.contract_id == Contract.id, *period_conds)
         .scalar_subquery()
     )
-    period_balance_subq = (
-        select(installment_balance_due_expr())
+    period_due_subq = (
+        select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
         .where(Installment.contract_id == Contract.id, *period_conds)
-        .correlate(Contract)
         .scalar_subquery()
     )
 
@@ -554,7 +573,9 @@ async def get_cost_center_contracts_data(
         - received_subq,
     ).label("outstanding")
     collected = period_received_subq.label("collected")
-    balance_due = period_balance_subq.label("balance_due")
+    balance_due = func.greatest(
+        Decimal("0"), period_due_subq - period_received_subq
+    ).label("balance_due")
 
     stmt = (
         select(
@@ -639,12 +660,21 @@ async def get_aging_data(
         select(
             Contract.id,
             Contract.monthly_deduction,
-            installment_balance_due_expr().label("balance_due"),
+            func.greatest(
+                Decimal("0"),
+                func.coalesce(func.sum(Installment.due_amount), 0)
+                - func.coalesce(func.sum(Installment.received_amount), 0),
+            ).label("balance_due"),
             case(
                 (
                     Contract.monthly_deduction > 0,
                     func.round(
-                        installment_balance_due_expr() / Contract.monthly_deduction
+                        func.greatest(
+                            Decimal("0"),
+                            func.coalesce(func.sum(Installment.due_amount), 0)
+                            - func.coalesce(func.sum(Installment.received_amount), 0),
+                        )
+                        / Contract.monthly_deduction
                     ),
                 ),
                 else_=0,
@@ -1108,6 +1138,11 @@ async def get_overdue_report(
         .where(Installment.contract_id == Contract.id)
         .scalar_subquery()
     )
+    total_due_subq = (
+        select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
+        .where(Installment.contract_id == Contract.id)
+        .scalar_subquery()
+    )
     period_received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
         .where(Installment.contract_id == Contract.id, Installment.received_amount > 0)
@@ -1118,19 +1153,20 @@ async def get_overdue_report(
     from datetime import date as _date
 
     month_start = _date(date.today().year, date.today().month, 1)
-    overdue_balance_subq = (
-        select(installment_balance_due_expr())
+    overdue_due_subq = (
+        select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
         .where(
             Installment.contract_id == Contract.id,
             Installment.due_month < month_start,
         )
-        .correlate(Contract)
         .scalar_subquery()
     )
-    balance_due_subq = (
-        select(installment_balance_due_expr())
-        .where(Installment.contract_id == Contract.id)
-        .correlate(Contract)
+    overdue_received_subq = (
+        select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
+        .where(
+            Installment.contract_id == Contract.id,
+            Installment.due_month < month_start,
+        )
         .scalar_subquery()
     )
 
@@ -1140,8 +1176,12 @@ async def get_overdue_report(
         + func.coalesce(Contract.gst, Decimal("0"))
         - received_subq,
     ).label("outstanding")
-    overdue_amount = overdue_balance_subq.label("overdue_amount")
-    balance_due = balance_due_subq.label("balance_due")
+    overdue_amount = func.greatest(
+        Decimal("0"), overdue_due_subq - overdue_received_subq
+    ).label("overdue_amount")
+    balance_due = func.greatest(
+        Decimal("0"), total_due_subq - received_subq
+    ).label("balance_due")
 
     stmt = (
         select(
@@ -1215,10 +1255,9 @@ async def get_report_by_region(
         .where(Installment.contract_id == Contract.id)
         .scalar_subquery()
     )
-    balance_due_subq = (
-        select(installment_balance_due_expr())
+    total_due_subq = (
+        select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
         .where(Installment.contract_id == Contract.id)
-        .correlate(Contract)
         .scalar_subquery()
     )
 
@@ -1228,7 +1267,7 @@ async def get_report_by_region(
         + func.coalesce(Contract.gst, Decimal("0"))
         - received_subq,
     )
-    balance_due = balance_due_subq
+    balance_due = func.greatest(Decimal("0"), total_due_subq - received_subq)
 
     stmt = (
         select(
@@ -1278,10 +1317,9 @@ async def get_report_by_brand(
         .where(Installment.contract_id == Contract.id)
         .scalar_subquery()
     )
-    balance_due_subq = (
-        select(installment_balance_due_expr())
+    total_due_subq = (
+        select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
         .where(Installment.contract_id == Contract.id)
-        .correlate(Contract)
         .scalar_subquery()
     )
 
@@ -1291,7 +1329,7 @@ async def get_report_by_brand(
         + func.coalesce(Contract.gst, Decimal("0"))
         - received_subq,
     )
-    balance_due = balance_due_subq
+    balance_due = func.greatest(Decimal("0"), total_due_subq - received_subq)
 
     stmt = (
         select(

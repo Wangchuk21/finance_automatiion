@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.installments import installment_balance_due_expr
 from app.models import (
     Contract,
     Installment,
@@ -319,7 +318,6 @@ async def get_reminder_candidates(
             Installment.contract_id,
             func.coalesce(func.sum(Installment.due_amount), 0).label("total_due"),
             func.coalesce(func.sum(Installment.received_amount), 0).label("total_rec"),
-            installment_balance_due_expr().label("balance"),
         )
         .where(Installment.due_month < month_start)
         .group_by(Installment.contract_id)
@@ -327,9 +325,9 @@ async def get_reminder_candidates(
     )
 
     query = (
-        select(Contract, subq.c.total_due, subq.c.total_rec, subq.c.balance)
+        select(Contract, subq.c.total_due, subq.c.total_rec)
         .join(subq, Contract.id == subq.c.contract_id)
-        .where(subq.c.balance > 0)
+        .where(subq.c.total_due > subq.c.total_rec)
     )
 
     if region and region.lower() != "all":
@@ -360,10 +358,10 @@ async def get_reminder_candidates(
     with_mobile = 0
     missing_mobile = 0
 
-    for contract, total_due, total_rec, total_balance in results:
+    for contract, total_due, total_rec in results:
         due_val = Decimal(str(total_due or 0))
         rec_val = Decimal(str(total_rec or 0))
-        balance_due = float(total_balance or 0)
+        balance_due = float(max(Decimal(0), due_val - rec_val))
 
         if balance_due < min_balance:
             continue
@@ -498,7 +496,6 @@ async def send_customer_reminders(
             Installment.contract_id,
             func.coalesce(func.sum(Installment.due_amount), 0).label("total_due"),
             func.coalesce(func.sum(Installment.received_amount), 0).label("total_rec"),
-            installment_balance_due_expr().label("balance"),
         )
         .where(Installment.due_month < month_start)
         .group_by(Installment.contract_id)
@@ -506,7 +503,7 @@ async def send_customer_reminders(
     )
 
     query = (
-        select(Contract, subq.c.total_due, subq.c.total_rec, subq.c.balance)
+        select(Contract, subq.c.total_due, subq.c.total_rec)
         .join(subq, Contract.id == subq.c.contract_id)
         .where(Contract.id.in_(contract_ids))
     )
@@ -518,10 +515,10 @@ async def send_customer_reminders(
 
     now = datetime.now(timezone.utc)
 
-    for contract, total_due, total_rec, total_balance in results:
+    for contract, total_due, total_rec in results:
         due_val = Decimal(str(total_due or 0))
         rec_val = Decimal(str(total_rec or 0))
-        balance_due = float(total_balance or 0)
+        balance_due = float(max(Decimal(0), due_val - rec_val))
 
         # Check phone
         raw_phone = str(contract.mobile or "").strip()
