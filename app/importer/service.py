@@ -126,6 +126,7 @@ async def upsert_contracts(
             upload_id,
             as_of=as_of,
             existing=existing_installments,
+            contract=contract,
         )
         result.installments_created += inst_result.created
         result.installments_updated += inst_result.updated
@@ -215,6 +216,46 @@ class InstallmentUpsertResult:
     unchanged: int = 0
 
 
+def _add_months(value: date, months: int) -> date:
+    total = value.year * 12 + (value.month - 1) + months
+    return date(total // 12, total % 12 + 1, 1)
+
+
+def _expected_due(
+    contract: Optional[Contract],
+    due_month: date,
+    due_amount: Optional[Decimal],
+) -> Optional[Decimal]:
+    """Return a due amount for a month inside the contract's EMI schedule.
+
+    Payment-only sheets often have no Monthly Deduction column, so the parser
+    yields ``None`` or ``0`` for ``due_amount``. When the month falls inside
+    the contract's EMI window, use the contract's monthly deduction (+ GST in
+    the first month) instead of storing a zero due.
+    """
+    if due_amount is not None and due_amount > 0:
+        return due_amount
+    if contract is None or not contract.start_date:
+        return due_amount
+
+    monthly = _to_decimal(contract.monthly_deduction)
+    if not monthly or monthly <= 0:
+        return due_amount
+
+    emi_months = int(contract.emi_months) if contract.emi_months else None
+    start = date(contract.start_date.year, contract.start_date.month, 1)
+    month = date(due_month.year, due_month.month, 1)
+    if month < start:
+        return due_amount
+    if emi_months is not None and month > _add_months(start, emi_months - 1):
+        return due_amount
+
+    gst = _to_decimal(contract.gst) if month == start else None
+    return (monthly + (gst or Decimal("0"))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
 async def _upsert_installments(
     session: AsyncSession,
     contract_id: int,
@@ -222,12 +263,14 @@ async def _upsert_installments(
     upload_id: int,
     as_of: Optional[date] = None,
     existing: Optional[Dict[Tuple[int, date], Installment]] = None,
+    contract: Optional[Contract] = None,
 ) -> InstallmentUpsertResult:
     """Upsert installments for a contract.
 
     ``existing`` is an optional pre-fetched map of
     ``(contract_id, due_month) -> Installment`` shared across contracts. When
-    supplied, no per-row SELECT is issued.
+    supplied, no per-row SELECT is issued. ``contract`` is used to fill a
+    missing due amount for months inside its EMI schedule.
     """
     result = InstallmentUpsertResult()
 
@@ -263,11 +306,6 @@ async def _upsert_installments(
         # cell_status: not_received / not_deducted (from the cell text)
         cell_status = inst_data.get("not_status") or inst_data.get("cell_status")
 
-        # status
-        status = _determine_installment_status(
-            due_amount, received_amount, cell_status, as_of, due_month=due_month
-        )
-
         # Check if installment exists (pre-fetched map when available)
         key = (contract_id, due_month)
         if existing is not None:
@@ -279,6 +317,21 @@ async def _upsert_installments(
             )
             rows = await session.execute(stmt)
             installment = rows.scalar_one_or_none()
+
+        # A payment-only sheet may not carry the schedule, so fill the due from
+        # the contract, and never let such an upload erase a known due.
+        due_amount = _expected_due(contract, due_month, due_amount)
+        if (
+            installment is not None
+            and (due_amount is None or due_amount == 0)
+            and installment.due_amount
+        ):
+            due_amount = installment.due_amount
+
+        # status
+        status = _determine_installment_status(
+            due_amount, received_amount, cell_status, as_of, due_month=due_month
+        )
 
         if installment is None:
             installment = Installment(
@@ -455,6 +508,7 @@ async def upsert_payments(
             upload_id,
             as_of=as_of,
             existing=existing_installments,
+            contract=contract,
         )
         result.installments_created += inst_result.created
         result.installments_updated += inst_result.updated

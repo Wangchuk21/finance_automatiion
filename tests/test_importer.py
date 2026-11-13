@@ -1672,3 +1672,89 @@ async def test_contract_schedule_inside_outside_and_db():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+def test_installment_upsert_derives_due_for_month_inside_schedule():
+    """A payment-only row inside the EMI window gets the contract's due."""
+    import asyncio
+
+    from app.importer.service import _upsert_installments
+    from app.models import Contract
+
+    contract = Contract(
+        reference="BT250503000007",
+        monthly_deduction=Decimal("4660.00"),
+        gst=None,
+        start_date=date(2025, 4, 3),
+        end_date=date(2027, 3, 3),
+        emi_months=24,
+    )
+
+    class _FakeSession:
+        def add(self, obj):
+            pass
+
+    created = {}
+
+    def _capture(obj):
+        created["installment"] = obj
+
+    session = _FakeSession()
+    session.add = _capture
+
+    asyncio.run(
+        _upsert_installments(
+            session,
+            contract_id=1,
+            installments_data=[
+                {
+                    "due_month": date(2026, 10, 1),
+                    "received_amount": Decimal("4660.00"),
+                    "due_amount": None,
+                }
+            ],
+            upload_id=1,
+            existing={},
+            contract=contract,
+        )
+    )
+
+    installment = created["installment"]
+    assert installment.due_amount == Decimal("4660.00")
+    assert installment.received_amount == Decimal("4660.00")
+
+
+def test_installment_upsert_keeps_existing_due_when_sheet_has_none():
+    """A payment-only upload must not overwrite a known due with NULL/0."""
+    import asyncio
+
+    from app.importer.service import _upsert_installments
+    from app.models import Installment, InstallmentStatus
+
+    due_month = date(2026, 10, 1)
+    existing = Installment(
+        contract_id=1,
+        due_month=due_month,
+        due_amount=Decimal("4660.00"),
+        received_amount=Decimal("0"),
+        status=InstallmentStatus.PENDING,
+    )
+
+    asyncio.run(
+        _upsert_installments(
+            None,
+            contract_id=1,
+            installments_data=[
+                {
+                    "due_month": due_month,
+                    "received_amount": Decimal("4660.00"),
+                    "due_amount": None,
+                }
+            ],
+            upload_id=1,
+            existing={(1, due_month): existing},
+        )
+    )
+
+    assert existing.due_amount == Decimal("4660.00")
+    assert existing.received_amount == Decimal("4660.00")
+    assert existing.status == InstallmentStatus.PAID
