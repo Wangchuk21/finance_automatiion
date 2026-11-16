@@ -264,6 +264,7 @@ async def _upsert_installments(
     as_of: Optional[date] = None,
     existing: Optional[Dict[Tuple[int, date], Installment]] = None,
     contract: Optional[Contract] = None,
+    merge_sources: bool = False,
 ) -> InstallmentUpsertResult:
     """Upsert installments for a contract.
 
@@ -271,6 +272,11 @@ async def _upsert_installments(
     ``(contract_id, due_month) -> Installment`` shared across contracts. When
     supplied, no per-row SELECT is issued. ``contract`` is used to fill a
     missing due amount for months inside its EMI schedule.
+
+    When ``merge_sources`` is True (payment-only uploads), preserve an existing
+    per-source amount if the incoming upload does not carry that source, so a
+    salary-slip upload and an external/bank-ledger upload can both contribute to
+    the same contract/month.
     """
     result = InstallmentUpsertResult()
 
@@ -327,6 +333,26 @@ async def _upsert_installments(
             and installment.due_amount
         ):
             due_amount = installment.due_amount
+
+        # Merge per-source amounts so different payment files can both contribute
+        # (e.g. salary slip + external/bank ledger for the same month). If this
+        # upload carries one source as zero/missing while providing the other,
+        # keep the existing value for the non-carried source.
+        if merge_sources and installment is not None:
+            inc_external = external_amount or Decimal("0")
+            inc_salary = salary_amount or Decimal("0")
+            ex_external = _to_decimal(installment.external_amount) or Decimal("0")
+            ex_salary = _to_decimal(installment.salary_amount) or Decimal("0")
+
+            if inc_external == Decimal("0") and inc_salary > Decimal("0") and ex_external > Decimal("0"):
+                external_amount = ex_external
+            if inc_salary == Decimal("0") and inc_external > Decimal("0") and ex_salary > Decimal("0"):
+                salary_amount = ex_salary
+
+            received_amount = (
+                (_to_decimal(external_amount) or Decimal("0"))
+                + (_to_decimal(salary_amount) or Decimal("0"))
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         # status
         status = _determine_installment_status(

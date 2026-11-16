@@ -1314,6 +1314,138 @@ def test_installment_upsert_keeps_direct_received_when_splits_are_zero():
     assert result.created == 0
 
 
+def test_payment_upsert_merges_salary_after_external():
+    """A salary-slip payment upload must add to an existing external payment."""
+    import asyncio
+
+    from app.importer.service import _upsert_installments
+    from app.models import Installment, InstallmentStatus
+
+    due_month = date(2026, 10, 1)
+    existing = Installment(
+        contract_id=1,
+        due_month=due_month,
+        due_amount=Decimal("1910.00"),
+        received_amount=Decimal("1910.00"),
+        salary_amount=Decimal("0"),
+        external_amount=Decimal("1910.00"),
+        status=InstallmentStatus.PAID,
+    )
+
+    result = asyncio.run(
+        _upsert_installments(
+            None,
+            contract_id=1,
+            installments_data=[
+                {
+                    "due_month": due_month,
+                    "received_amount": Decimal("3963.20"),
+                    "salary_amount": Decimal("3963.20"),
+                    "external_amount": Decimal("0"),
+                    "due_amount": None,
+                }
+            ],
+            upload_id=2,
+            existing={(1, due_month): existing},
+            merge_sources=True,
+        )
+    )
+
+    assert existing.salary_amount == Decimal("3963.20")
+    assert existing.external_amount == Decimal("1910.00")
+    assert existing.received_amount == Decimal("5873.20")
+    assert result.updated == 1
+
+
+def test_payment_upsert_merges_external_after_salary():
+    """An external/bank-ledger upload must add to an existing salary payment."""
+    import asyncio
+
+    from app.importer.service import _upsert_installments
+    from app.models import Installment, InstallmentStatus
+
+    due_month = date(2026, 10, 1)
+    existing = Installment(
+        contract_id=1,
+        due_month=due_month,
+        due_amount=Decimal("1910.00"),
+        received_amount=Decimal("3963.20"),
+        salary_amount=Decimal("3963.20"),
+        external_amount=Decimal("0"),
+        status=InstallmentStatus.PAID,
+    )
+
+    result = asyncio.run(
+        _upsert_installments(
+            None,
+            contract_id=1,
+            installments_data=[
+                {
+                    "due_month": due_month,
+                    "received_amount": Decimal("1910.00"),
+                    "salary_amount": Decimal("0"),
+                    "external_amount": Decimal("1910.00"),
+                    "due_amount": None,
+                }
+            ],
+            upload_id=2,
+            existing={(1, due_month): existing},
+            merge_sources=True,
+        )
+    )
+
+    assert existing.salary_amount == Decimal("3963.20")
+    assert existing.external_amount == Decimal("1910.00")
+    assert existing.received_amount == Decimal("5873.20")
+    assert result.updated == 1
+
+
+def test_payment_upsert_merge_is_idempotent_for_same_source():
+    """Re-uploading the same payment source must not double-count."""
+    import asyncio
+
+    from app.importer.service import _upsert_installments
+    from app.models import Installment, InstallmentStatus
+
+    due_month = date(2026, 10, 1)
+    existing = Installment(
+        contract_id=1,
+        due_month=due_month,
+        due_amount=Decimal("1910.00"),
+        received_amount=Decimal("5873.20"),
+        salary_amount=Decimal("3963.20"),
+        external_amount=Decimal("1910.00"),
+        status=InstallmentStatus.PAID,
+    )
+
+    for payload in (
+        {
+            "received_amount": Decimal("3963.20"),
+            "salary_amount": Decimal("3963.20"),
+            "external_amount": Decimal("0"),
+        },
+        {
+            "received_amount": Decimal("1910.00"),
+            "salary_amount": Decimal("0"),
+            "external_amount": Decimal("1910.00"),
+        },
+    ):
+        asyncio.run(
+            _upsert_installments(
+                None,
+                contract_id=1,
+                installments_data=[{"due_month": due_month, "due_amount": None, **payload}],
+                upload_id=3,
+                existing={(1, due_month): existing},
+                merge_sources=True,
+            )
+        )
+
+    assert existing.salary_amount == Decimal("3963.20")
+    assert existing.external_amount == Decimal("1910.00")
+    assert existing.received_amount == Decimal("5873.20")
+
+
 def test_three_contracts_db_write():
     """End-to-end upsert test against finance_test DB (3 synthetic contracts with dates and tenure)."""
     asyncio.run(_run_db_write_test())
