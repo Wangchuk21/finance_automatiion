@@ -182,14 +182,40 @@ alembic revision --autogenerate -m "description"
 alembic upgrade head
 ```
 
+## SMS Notifications (Bhutan Telecom)
+
+Customer EMI reminders are sent through **BTL Mail Studio**
+(`https://notification-ms.intra.bt`). Configure the gateway in `.env`:
+
+```bash
+SMS_ENABLED=true
+SMS_GATEWAY_URL=https://notification-ms.intra.bt
+SMS_GATEWAY_EMAIL=your-account@bt.bt
+SMS_GATEWAY_PASSWORD=your-password
+SMS_SENDER_ID=BTL-EMI
+SMS_VERIFY_TLS=false   # gateway currently uses a self-signed certificate
+```
+
+Verify credentials and connectivity by sending one test message:
+
+```bash
+python -m app.scripts.test_sms --to 17123456 --message "Test from Finance Automation"
+```
+
+With `SMS_ENABLED=false` the reminder flow runs in simulation mode: messages are
+rendered, logged, and recorded in `notifications` with status `sent`, but no SMS
+leaves the server. When enabled, failures are recorded per recipient with the
+gateway's error message and counted in the reminder response.
+
 ## Production Deployment
 
 1. Set `APP_ENV=production` and `DEBUG=false`
 2. Use strong `SECRET_KEY` and `ANONYMIZATION_SALT`
 3. Configure proper `DATABASE_URL` with connection pooling
 4. Set up SMTP for notifications
-5. Use a reverse proxy (nginx) with SSL
-6. Run with gunicorn: `gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker`
+5. Configure the SMS gateway (see above) and run the test-send command
+6. Use a reverse proxy (nginx) with SSL
+7. Run with gunicorn: `gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker`
 
 ## License
 

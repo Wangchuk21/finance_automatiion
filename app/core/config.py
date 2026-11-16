@@ -58,11 +58,20 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = "changeme"
     SMTP_FROM: str = "Finance Automation <notifications@example.com>"
 
-    # SMS Gateway (Bhutan Telecom)
-    SMS_GATEWAY_URL: Optional[str] = None
-    SMS_API_KEY: Optional[str] = None
+    # SMS Gateway (Bhutan Telecom — BTL Mail Studio / notification-ms.intra.bt)
+    SMS_GATEWAY_URL: Optional[str] = "https://notification-ms.intra.bt"
+    SMS_GATEWAY_EMAIL: Optional[str] = None
+    SMS_GATEWAY_PASSWORD: Optional[str] = None
+    SMS_API_KEY: Optional[str] = None  # Reserved; the gateway uses email/password login
     SMS_SENDER_ID: str = "BTL-EMI"
-    SMS_ENABLED: bool = False  # Set to True when SMS gateway URL is provided
+    SMS_ENABLED: bool = False  # Set to True once credentials are configured
+    # The gateway currently serves a self-signed certificate, so TLS verification
+    # must stay off unless it is replaced by an internal-CA certificate.
+    SMS_VERIFY_TLS: bool = False
+    SMS_TIMEOUT_SECONDS: float = 15.0
+    SMS_MAX_CONCURRENCY: int = 5
+    SMS_TOKEN_TTL_SECONDS: int = 1800  # Re-login after 30 min even if the token still works
+    SMS_COUNTRY_CODE: str = "975"  # Bhutan
 
     # Anonymization
     ANONYMIZATION_SALT: str = Field(..., min_length=16)

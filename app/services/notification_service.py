@@ -32,6 +32,11 @@ from app.schemas.notifications import (
     ReminderPreviewResponse,
     SendRemindersResponse,
 )
+from app.services.sms_gateway import (
+    SmsSendResult,
+    get_sms_client,
+    normalize_phone,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +287,20 @@ def _render_sms_template(
     return rendered
 
 
+def _aging_bucket(balance_due: float, monthly: float) -> Tuple[str, str]:
+    """Return the (bucket, alert level) pair for an outstanding balance."""
+    inst_due = balance_due / monthly if monthly > 0 else 0.0
+    if inst_due <= 0.05:
+        return "0-30", "Normal"
+    if inst_due <= 1.05:
+        return "31-60", "Watch"
+    if inst_due <= 2.05:
+        return "61-90", "Follow-up"
+    if inst_due <= 4.05:
+        return "91-120", "Critical"
+    return "120+", "Critical"
+
+
 async def get_reminder_candidates(
     session: AsyncSession,
     aging_bucket: Optional[str] = None,
@@ -372,26 +391,7 @@ async def get_reminder_candidates(
         outstanding = float(max(Decimal(0), Decimal(str(sales)) + Decimal(str(gst)) - rec_val))
 
         # Calculate installments due and aging bucket
-        if monthly > 0:
-            inst_due = balance_due / monthly
-        else:
-            inst_due = 0.0
-
-        if inst_due <= 0.05:
-            b_name = "0-30"
-            alert_name = "Normal"
-        elif inst_due <= 1.05:
-            b_name = "31-60"
-            alert_name = "Watch"
-        elif inst_due <= 2.05:
-            b_name = "61-90"
-            alert_name = "Follow-up"
-        elif inst_due <= 4.05:
-            b_name = "91-120"
-            alert_name = "Critical"
-        else:
-            b_name = "120+"
-            alert_name = "Critical"
+        b_name, alert_name = _aging_bucket(balance_due, monthly)
 
         if aging_bucket and aging_bucket.lower() != "all":
             if aging_bucket == "critical":
@@ -515,84 +515,144 @@ async def send_customer_reminders(
 
     now = datetime.now(timezone.utc)
 
+    # Build the dispatch list first so the (slow) HTTP calls can run concurrently
+    # while the database session stays single-threaded.
+    targets: List[Dict[str, Any]] = []
+
     for contract, total_due, total_rec in results:
         due_val = Decimal(str(total_due or 0))
         rec_val = Decimal(str(total_rec or 0))
         balance_due = float(max(Decimal(0), due_val - rec_val))
 
-        # Check phone
         raw_phone = str(contract.mobile or "").strip()
-        phone_digits = re.sub(r"[^\d]", "", raw_phone)
+        phone = normalize_phone(raw_phone)
 
-        if len(phone_digits) < 8:
+        if not phone:
             skipped_no_phone += 1
             # Record failed notification for audit
-            notif = Notification(
-                template_id=template_id,
-                recipient_type="customer",
-                recipient_id=raw_phone or "unknown",
-                channel="sms",
-                subject="EMI Due Reminder",
-                body=f"Skipped: Missing or invalid mobile number for contract {contract.reference}",
-                status="failed",
-                error="No valid phone number",
-                meta=json.dumps({"contract_id": contract.id, "reference": contract.reference}),
+            session.add(
+                Notification(
+                    template_id=template_id,
+                    recipient_type="customer",
+                    recipient_id=raw_phone or "unknown",
+                    channel="sms",
+                    subject="EMI Due Reminder",
+                    body=f"Skipped: Missing or invalid mobile number for contract {contract.reference}",
+                    status="failed",
+                    error="No valid phone number",
+                    meta=json.dumps({"contract_id": contract.id, "reference": contract.reference}),
+                )
             )
-            session.add(notif)
             continue
 
         clean_name = contract.customer or "Customer"
         if "(" in clean_name:
             clean_name = clean_name.split("(")[0].strip()
 
+        monthly = float(contract.monthly_deduction or 0)
+        b_name, _ = _aging_bucket(balance_due, monthly)
+
         data_dict = {
             "customer": clean_name,
             "reference": contract.reference,
             "item": contract.item or "Device",
             "balance_due": balance_due,
-            "mobile": phone_digits,
+            "aging_bucket": b_name,
+            "mobile": phone,
         }
         rendered_msg = _render_sms_template(selected_template_text or "", data_dict)
 
-        # Dispatch simulation or actual SMS
-        status = "sent"
-        error_msg = None
-
-        if settings.SMS_ENABLED and settings.SMS_GATEWAY_URL:
-            # Here we can make HTTP request to Bhutan Telecom SMS Gateway
-            logger.info("Dispatching SMS to %s via gateway: %s", phone_digits, rendered_msg)
-        else:
-            # Simulated/Logged transmission for testing & staging
-            logger.info("[SMS SIMULATED] To: %s | Message: %s", phone_digits, rendered_msg)
-
-        notif = Notification(
-            template_id=template_id,
-            recipient_type="customer",
-            recipient_id=phone_digits,
-            channel="sms",
-            subject="EMI Due Reminder",
-            body=rendered_msg,
-            status=status,
-            sent_at=now,
-            error=error_msg,
-            meta=json.dumps({
-                "contract_id": contract.id,
-                "reference": contract.reference,
+        targets.append(
+            {
+                "contract": contract,
+                "phone": phone,
+                "message": rendered_msg,
                 "customer": clean_name,
                 "balance_due": balance_due,
-            }),
+            }
         )
-        session.add(notif)
-        sent_count += 1
+
+    # Dispatch: real gateway when enabled, otherwise simulate and log.
+    gateway_error: Optional[str] = None
+    dispatch: List[Optional[SmsSendResult]] = [None] * len(targets)
+
+    if settings.SMS_ENABLED:
+        client = get_sms_client()
+        if not client.is_configured():
+            gateway_error = (
+                "SMS gateway is enabled but not configured "
+                "(SMS_GATEWAY_URL, SMS_GATEWAY_EMAIL, SMS_GATEWAY_PASSWORD)"
+            )
+            logger.error(gateway_error)
+        else:
+            dispatch = list(
+                await client.send_many([(t["phone"], t["message"]) for t in targets])
+            )
+    else:
+        for t in targets:
+            logger.info("[SMS SIMULATED] To: %s | Message: %s", t["phone"], t["message"])
+
+    for target, result in zip(targets, dispatch, strict=True):
+        contract = target["contract"]
+        meta = {
+            "contract_id": contract.id,
+            "reference": contract.reference,
+            "customer": target["customer"],
+            "balance_due": target["balance_due"],
+        }
+
+        if result is None:
+            # Simulated send (gateway disabled) or configuration error.
+            if gateway_error:
+                status = "failed"
+                error_msg: Optional[str] = gateway_error
+                failed_count += 1
+            else:
+                status = "sent"
+                error_msg = None
+                sent_count += 1
+        elif result.ok:
+            status = "sent"
+            error_msg = None
+            sent_count += 1
+            if result.message_id:
+                meta["provider_message_id"] = result.message_id
+        else:
+            status = "failed"
+            error_msg = result.error
+            failed_count += 1
+
+        session.add(
+            Notification(
+                template_id=template_id,
+                recipient_type="customer",
+                recipient_id=target["phone"],
+                channel="sms",
+                subject="EMI Due Reminder",
+                body=target["message"],
+                status=status,
+                sent_at=now if status == "sent" else None,
+                error=error_msg,
+                meta=json.dumps(meta),
+            )
+        )
 
     await session.commit()
+
+    summary = f"Dispatched {sent_count} SMS reminder(s)."
+    if failed_count:
+        summary += f" {failed_count} failed."
+    if skipped_no_phone:
+        summary += f" {skipped_no_phone} skipped without a valid phone number."
+    if not settings.SMS_ENABLED:
+        summary += " SMS gateway disabled — messages were only logged (simulation)."
 
     return SendRemindersResponse(
         total_targeted=len(contract_ids),
         sent_count=sent_count,
         failed_count=failed_count,
         skipped_no_phone=skipped_no_phone,
-        message=f"Successfully dispatched {sent_count} reminders ({skipped_no_phone} skipped without phone number).",
+        message=summary,
     )
 
 

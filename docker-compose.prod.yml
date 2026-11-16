@@ -63,9 +63,13 @@ services:
       - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       - SMTP_FROM=${SMTP_FROM:-Finance Notification <finance.notification@bt.bt>}
       - SMS_ENABLED=${SMS_ENABLED:-false}
-      - SMS_GATEWAY_URL=${SMS_GATEWAY_URL:-}
-      - SMS_API_KEY=${SMS_API_KEY:-}
+      - SMS_GATEWAY_URL=${SMS_GATEWAY_URL:-https://notification-ms.intra.bt}
+      - SMS_GATEWAY_EMAIL=${SMS_GATEWAY_EMAIL:-}
+      - SMS_GATEWAY_PASSWORD=${SMS_GATEWAY_PASSWORD:-}
       - SMS_SENDER_ID=${SMS_SENDER_ID:-BTL-EMI}
+      - SMS_VERIFY_TLS=${SMS_VERIFY_TLS:-false}
+      - SMS_TIMEOUT_SECONDS=${SMS_TIMEOUT_SECONDS:-15}
+      - SMS_MAX_CONCURRENCY=${SMS_MAX_CONCURRENCY:-5}
       - MAX_UPLOAD_SIZE_MB=50
       - ACCESS_TOKEN_EXPIRE_MINUTES=30
     volumes:

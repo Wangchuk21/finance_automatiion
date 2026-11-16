@@ -42,6 +42,19 @@ services:
       - MAX_UPLOAD_SIZE_MB=50
       - ANONYMIZATION_SALT=dev-anonymization-salt-change-in-production
       - CORS_ORIGINS=http://localhost:5173,http://localhost:5174
+      - SMTP_HOST=${SMTP_HOST:-smtp11.bt.bt}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-Finance Notification <finance.notification@bt.bt>}
+      - SMS_ENABLED=${SMS_ENABLED:-false}
+      - SMS_GATEWAY_URL=${SMS_GATEWAY_URL:-https://notification-ms.intra.bt}
+      - SMS_GATEWAY_EMAIL=${SMS_GATEWAY_EMAIL:-}
+      - SMS_GATEWAY_PASSWORD=${SMS_GATEWAY_PASSWORD:-}
+      - SMS_SENDER_ID=${SMS_SENDER_ID:-BTL-EMI}
+      - SMS_VERIFY_TLS=${SMS_VERIFY_TLS:-false}
+      - SMS_TIMEOUT_SECONDS=${SMS_TIMEOUT_SECONDS:-15}
+      - SMS_MAX_CONCURRENCY=${SMS_MAX_CONCURRENCY:-5}
     ports:
       - "8001:8000"
     volumes:
