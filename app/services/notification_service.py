@@ -405,11 +405,11 @@ async def get_reminder_candidates(
         if "(" in clean_name:
             clean_name = clean_name.split("(")[0].strip()
 
-        # Clean mobile
+        # Clean mobile. Validity must match what the SMS gateway accepts, so use
+        # the same normalizer as dispatch (8 local digits or 975 + 8 digits).
         raw_mobile = str(contract.mobile or "").strip()
-        # Keep digits
         digits = re.sub(r"[^\d]", "", raw_mobile)
-        has_valid_mobile = len(digits) >= 8
+        has_valid_mobile = normalize_phone(raw_mobile) is not None
 
         if has_valid_mobile:
             with_mobile += 1
