@@ -10,7 +10,7 @@ import { Stepper, type StepperStep } from "@/components/ui/stepper";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatError } from "@/lib/api";
+import { dashboardApi, formatError, type UploadRowData } from "@/lib/api";
 
 interface ValidationIssue {
   severity: "error" | "warning" | "info";
@@ -122,6 +122,26 @@ export function UploadPage() {
     return today.toISOString().slice(0, 10); // YYYY-MM-DD
   });
   const [uploadType, setUploadType] = React.useState<UploadTypeKey>("customer");
+  const [recentUploads, setRecentUploads] = React.useState<UploadRowData[]>([]);
+  const [recentUploadsLoading, setRecentUploadsLoading] = React.useState(true);
+  const [recentUploadsError, setRecentUploadsError] = React.useState<string | null>(null);
+
+  const loadRecentUploads = React.useCallback(async () => {
+    setRecentUploadsLoading(true);
+    setRecentUploadsError(null);
+    try {
+      const rows = await dashboardApi.getRecentUploads();
+      setRecentUploads(rows || []);
+    } catch (err) {
+      setRecentUploadsError("Could not load recent uploads.");
+    } finally {
+      setRecentUploadsLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadRecentUploads();
+  }, [loadRecentUploads]);
 
   const onDrop = React.useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -213,6 +233,7 @@ export function UploadPage() {
         setPreview(null);
         setUploadId(null);
         setTotpCode("");
+        void loadRecentUploads();
       } else {
         alert(
           isJson && data?.detail
@@ -256,6 +277,52 @@ export function UploadPage() {
       <Card className="mt-4">
         <CardContent className="pt-0">{renderStepContent()}</CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent Uploads</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {recentUploadsError ? (
+            <p className="text-sm text-critical text-center py-4">{recentUploadsError}</p>
+          ) : recentUploadsLoading ? (
+            <p className="text-sm text-text-secondary text-center py-4">Loading recent uploads…</p>
+          ) : recentUploads.length === 0 ? (
+            <p className="text-sm text-text-secondary text-center py-4">No uploads yet</p>
+          ) : (
+            <div className="space-y-3">
+              {recentUploads.map((upload) => (
+                <UploadRow key={upload.id} upload={upload} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function UploadRow({ upload }: { upload: UploadRowData }) {
+  const statusVariants: Record<string, "success" | "warning" | "neutral"> = {
+    confirmed: "success",
+    pending: "warning",
+    rolled_back: "neutral",
+  };
+
+  return (
+    <div className="flex items-center justify-between p-3 rounded-lg bg-neutral-light/50 border border-border">
+      <div className="flex items-center gap-3">
+        <div className="p-2 rounded-full bg-primary/10">
+          <span className="text-primary">📄</span>
+        </div>
+        <div>
+          <p className="font-medium text-text-primary">{upload.file_name}</p>
+          <p className="text-sm text-text-secondary">{upload.date} • {upload.contracts} contracts</p>
+        </div>
+      </div>
+      <Badge variant={statusVariants[upload.status] || "neutral"}>
+        {upload.status}
+      </Badge>
     </div>
   );
 }

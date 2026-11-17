@@ -40,7 +40,6 @@ import {
   type CostCenterContractData,
   type CostCenterData,
   type DashboardData,
-  type UploadRowData,
 } from "@/lib/api";
 
 const PRESET_OPTIONS = [
@@ -243,7 +242,6 @@ export function Dashboard() {
   const aging = data?.aging || [];
   const trend = data?.trend || [];
   const attention = data?.attention || [];
-  const recentUploads = data?.recentUploads || [];
 
   return (
     <div className="space-y-6">
@@ -485,23 +483,6 @@ export function Dashboard() {
             </CardContent>
           </Card>
 
-          {/* Recent Uploads */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Recent Uploads</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {recentUploads.length === 0 ? (
-                  <p className="text-text-secondary text-center py-4">No uploads yet</p>
-                ) : (
-                  recentUploads.map((upload) => (
-                    <UploadRow key={upload.id} upload={upload} />
-                  ))
-                )}
-              </div>
-            </CardContent>
-          </Card>
         </div>
       </div>
 
@@ -1059,31 +1040,6 @@ function CardSkeleton() {
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function UploadRow({ upload }: { upload: UploadRowData }) {
-  const statusVariants: Record<string, "success" | "warning" | "neutral"> = {
-    confirmed: "success",
-    pending: "warning",
-    rolled_back: "neutral",
-  };
-
-  return (
-    <div className="flex items-center justify-between p-3 rounded-lg bg-neutral-light/50 border border-border">
-      <div className="flex items-center gap-3">
-        <div className="p-2 rounded-full bg-primary/10">
-          <span className="text-primary">📄</span>
-        </div>
-        <div>
-          <p className="font-medium text-text-primary">{upload.file_name}</p>
-          <p className="text-sm text-text-secondary">{upload.date} • {upload.contracts} contracts</p>
-        </div>
-      </div>
-      <Badge variant={statusVariants[upload.status] || "neutral"}>
-        {upload.status}
-      </Badge>
-    </div>
   );
 }
 
