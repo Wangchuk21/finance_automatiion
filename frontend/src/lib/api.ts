@@ -216,7 +216,6 @@ export interface InstallmentHistoryEntry {
   id: number;
   upload_id: number | null;
   file_name: string | null;
-  upload_type: string | null;
   upload_time: string | null;
   changed_at: string | null;
   previous_status: string | null;

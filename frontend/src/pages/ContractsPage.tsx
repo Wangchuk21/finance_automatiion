@@ -1502,7 +1502,6 @@ function ContractDetailDrawer({
                                                 Received: {entry.previous_received === null ? "—" : formatNumber(entry.previous_received)} → {entry.new_received === null ? "—" : formatNumber(entry.new_received)}
                                                 {" · "}
                                                 Status: {(entry.previous_status || "—").replace(/_/g, " ")} → {(entry.new_status || "—").replace(/_/g, " ")}
-                                                {entry.upload_type ? ` · ${entry.upload_type}` : ""}
                                               </div>
                                             </div>
                                           ))}

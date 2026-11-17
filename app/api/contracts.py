@@ -554,7 +554,6 @@ async def get_installment_history(
                 "id": history.id,
                 "upload_id": history.upload_id,
                 "file_name": upload.file_name if upload else None,
-                "upload_type": upload.upload_type.value if upload and upload.upload_type else None,
                 "upload_time": upload.upload_time.isoformat() if upload and upload.upload_time else None,
                 "changed_at": history.changed_at.isoformat() if history.changed_at else None,
                 "previous_status": history.previous_status.value if history.previous_status else None,

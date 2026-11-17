@@ -4,7 +4,7 @@ Runs strictly against finance_test (never finance_automation).
 """
 
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -16,7 +16,16 @@ from sqlalchemy.orm import sessionmaker
 from app.core.auth import get_current_user as get_current_user_dep
 from app.db.session import Base, get_session
 from app.main import app
-from app.models import Contract, Installment, InstallmentStatus, UserRole
+from app.models import (
+    Contract,
+    Installment,
+    InstallmentHistory,
+    InstallmentStatus,
+    Upload,
+    UploadStatus,
+    User,
+    UserRole,
+)
 
 TEST_DB_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -500,6 +509,104 @@ async def test_installments_report_past_unpaid_month_as_overdue():
         assert statuses[LAST_MONTH.isoformat()] == "overdue"
         assert statuses[THIS_MONTH.isoformat()] == "paid"
         assert statuses[TWO_MONTHS_AGO.isoformat()] == "partial"
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_installment_history_endpoint():
+    """History endpoint returns upload file names and before/after values."""
+    engine = create_async_engine(TEST_DB_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    upload_id = None
+    inst_id = None
+    contract_id = None
+    async with async_session() as s, s.begin():
+        user = User(
+            username="hist_uploader",
+            email="hist_uploader@example.com",
+            full_name="History Uploader",
+            password_hash="not-a-real-hash",
+            role=UserRole.FINANCE_UPLOADER.value,
+        )
+        s.add(user)
+        await s.flush()
+
+        c = Contract(reference="HIST-1", customer="Hist User", state="ACTIVE")
+        s.add(c)
+        await s.flush()
+        contract_id = c.id
+
+        inst = Installment(
+            contract_id=c.id,
+            due_month=LAST_MONTH,
+            due_amount=Decimal("1000.00"),
+            received_amount=Decimal("1000.00"),
+            salary_amount=Decimal("1000.00"),
+            external_amount=Decimal("0.00"),
+            status=InstallmentStatus.PAID,
+        )
+        s.add(inst)
+        await s.flush()
+        inst_id = inst.id
+
+        upload = Upload(
+            file_name="Salary_Slip_Oct.xlsx",
+            checksum="abc123",
+            uploaded_by=user.id,
+            upload_time=datetime.now(timezone.utc),
+            as_of_date=TODAY,
+            status=UploadStatus.CONFIRMED,
+        )
+        s.add(upload)
+        await s.flush()
+        upload_id = upload.id
+
+        s.add(
+            InstallmentHistory(
+                installment_id=inst.id,
+                upload_id=upload.id,
+                previous_status=InstallmentStatus.PENDING,
+                new_status=InstallmentStatus.PAID,
+                previous_received=Decimal("0.00"),
+                new_received=Decimal("1000.00"),
+            )
+        )
+
+    async def override_get_session():
+        async with async_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(
+                f"/api/v1/contracts/{contract_id}/installments/{inst_id}/history"
+            )
+            assert resp.status_code == 200, resp.text
+            entries = resp.json()
+            assert len(entries) == 1
+            assert entries[0]["file_name"] == "Salary_Slip_Oct.xlsx"
+            assert entries[0]["upload_id"] == upload_id
+            assert entries[0]["previous_status"] == "pending"
+            assert entries[0]["new_status"] == "paid"
+            assert entries[0]["previous_received"] == 0.0
+            assert entries[0]["new_received"] == 1000.0
+
+            # wrong contract -> 404
+            resp = await client.get(
+                f"/api/v1/contracts/999999/installments/{inst_id}/history"
+            )
+            assert resp.status_code == 404
     finally:
         app.dependency_overrides.pop(get_session, None)
         async with engine.begin() as conn:
