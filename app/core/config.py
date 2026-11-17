@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     SMS_TOKEN_TTL_SECONDS: int = 1800  # Re-login after 30 min even if the token still works
     SMS_COUNTRY_CODE: str = "975"  # Bhutan
 
+    # Payment details included in customer reminder SMS templates.
+    SMS_PAYMENT_ACCOUNT: str = "222797659"
+    SMS_PAYMENT_EMAIL: str = "btemi@bt.bt"
+
     # Anonymization
     ANONYMIZATION_SALT: str = Field(..., min_length=16)
 

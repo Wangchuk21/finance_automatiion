@@ -30,6 +30,11 @@ class NotificationTemplateResponse(NotificationTemplateBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class NotificationTemplateUpdate(BaseModel):
+    body_template: str = Field(..., min_length=1)
+    subject: Optional[str] = Field(None, max_length=200)
+
+
 # ---------------------------------------------------------------------------
 # In-App Staff Notification Schemas
 # ---------------------------------------------------------------------------

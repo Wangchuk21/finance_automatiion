@@ -133,8 +133,9 @@ async def test_notifications_full_flow():
             resp_templates = await client.get("/api/v1/notifications/templates")
             assert resp_templates.status_code == 200
             templates = resp_templates.json()
-            assert len(templates) >= 3
-            assert any(t["channel"] == "sms" for t in templates)
+            assert len(templates) == 1
+            assert templates[0]["name"] == "EMI Payment Reminder"
+            assert templates[0]["channel"] == "sms"
 
             # 2. Test In-App Notifications
             resp_in_app = await client.get("/api/v1/notifications/in-app")
@@ -165,8 +166,11 @@ async def test_notifications_full_flow():
             assert c2_cand["customer"] == "Dechen Dema"
             assert c2_cand["mobile"] == "77987654"
             assert c2_cand["balance_due"] == 10000.0
-            assert "Nu. 10,000.00" in c2_cand["rendered_message"]
-            assert "iPhone 16 Pro" in c2_cand["rendered_message"]
+            assert c2_cand["rendered_message"] == (
+                "Dear Dechen Dema, EMI of Nu. 10,000 (2 installments) is due for "
+                "iPhone 16 Pro (Ref: BT25010002). Please pay to A/c 222797659; "
+                "email proof to btemi@bt.bt. Thank you."
+            )
 
             # Filter by region
             resp_par = await client.get("/api/v1/notifications/reminders/candidates?region=Paro")
@@ -201,6 +205,28 @@ async def test_notifications_full_flow():
             failed_items = [i for i in items if i["status"] == "failed"]
             assert len(sent_items) == 2
             assert len(failed_items) == 1
+
+            # 7. Test Editing the Single SMS Template
+            template_id = templates[0]["id"]
+            resp_update = await client.put(
+                f"/api/v1/notifications/templates/{template_id}",
+                json={"body_template": "Reminder for {customer}: Nu. {balance_due_short}"},
+            )
+            assert resp_update.status_code == 200
+            assert resp_update.json()["body_template"] == (
+                "Reminder for {customer}: Nu. {balance_due_short}"
+            )
+
+            resp_updated_preview = await client.get(
+                "/api/v1/notifications/reminders/candidates?aging_bucket=all"
+            )
+            assert resp_updated_preview.status_code == 200
+            updated_c2 = next(
+                c
+                for c in resp_updated_preview.json()["candidates"]
+                if c["reference"] == "BT25010002"
+            )
+            assert updated_c2["rendered_message"] == "Reminder for Dechen Dema: Nu. 10,000"
 
     finally:
         app.dependency_overrides.pop(get_session, None)

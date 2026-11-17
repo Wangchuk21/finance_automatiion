@@ -212,6 +212,19 @@ export interface ContractInstallment {
   status: string;
 }
 
+export interface InstallmentHistoryEntry {
+  id: number;
+  upload_id: number | null;
+  file_name: string | null;
+  upload_type: string | null;
+  upload_time: string | null;
+  changed_at: string | null;
+  previous_status: string | null;
+  new_status: string | null;
+  previous_received: number | null;
+  new_received: number | null;
+}
+
 export interface ContractListParams {
   search?: string;
   state?: string;
@@ -533,6 +546,15 @@ export const contractsApi = {
     return fetchJson<ContractInstallment[]>(`/contracts/${contractId}/installments`);
   },
 
+  async getInstallmentHistory(
+    contractId: number,
+    installmentId: number
+  ): Promise<InstallmentHistoryEntry[]> {
+    return fetchJson<InstallmentHistoryEntry[]>(
+      `/contracts/${contractId}/installments/${installmentId}/history`
+    );
+  },
+
   async closeContract(
     contractId: number,
     data: { code: string; reason?: string; note?: string }
@@ -840,12 +862,23 @@ export const notificationsApi = {
     return fetchJson<NotificationTemplate[]>("/notifications/templates");
   },
 
+  async updateTemplate(
+    templateId: number,
+    payload: { body_template: string; subject?: string },
+  ): Promise<NotificationTemplate> {
+    return fetchJson<NotificationTemplate>(`/notifications/templates/${templateId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
   async getReminderCandidates(params?: {
     aging_bucket?: string;
     region?: string;
     channel?: string;
     min_balance?: number;
     template_id?: number;
+    custom_template?: string;
   }): Promise<ReminderPreviewResponse> {
     const qs = new URLSearchParams();
     if (params?.aging_bucket) qs.set("aging_bucket", params.aging_bucket);
@@ -853,6 +886,7 @@ export const notificationsApi = {
     if (params?.channel) qs.set("channel", params.channel);
     if (params?.min_balance !== undefined) qs.set("min_balance", params.min_balance.toString());
     if (params?.template_id) qs.set("template_id", params.template_id.toString());
+    if (params?.custom_template) qs.set("custom_template", params.custom_template);
     const query = qs.toString();
     return fetchJson<ReminderPreviewResponse>(`/notifications/reminders/candidates${query ? `?${query}` : ""}`);
   },

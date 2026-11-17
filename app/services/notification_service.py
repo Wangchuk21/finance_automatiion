@@ -4,10 +4,10 @@ import json
 import logging
 import re
 from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,6 +28,7 @@ from app.schemas.notifications import (
     NotificationHistoryItem,
     NotificationHistoryResponse,
     NotificationTemplateResponse,
+    NotificationTemplateUpdate,
     ReminderCandidate,
     ReminderPreviewResponse,
     SendRemindersResponse,
@@ -40,40 +41,44 @@ from app.services.sms_gateway import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TEMPLATE_NAME = "EMI Payment Reminder"
+
 DEFAULT_TEMPLATES = [
     {
-        "name": "Due Reminder (0-30 Days)",
+        "name": DEFAULT_TEMPLATE_NAME,
         "channel": "sms",
-        "subject": "EMI Payment Due Reminder",
+        "subject": "EMI Payment Reminder",
         "body_template": (
-            "Dear {customer}, your EMI installment of Nu. {balance_due} for {item} "
-            "(Ref: {reference}) is due. Please settle via Scan & Pay or B-Trowa. Bhutan Telecom."
+            "Dear {customer}, EMI of Nu. {balance_due_short} ({installments_text}) is due for "
+            "{item} (Ref: {reference}). Please pay to A/c {payment_account}; "
+            "email proof to {payment_email}. Thank you."
         ),
-        "variables": json.dumps(["customer", "balance_due", "item", "reference"]),
+        "variables": json.dumps(
+            [
+                "customer",
+                "balance_due_short",
+                "installments_text",
+                "item",
+                "reference",
+                "payment_account",
+                "payment_email",
+            ]
+        ),
         "is_active": True,
     },
-    {
-        "name": "Overdue Warning (31-60 Days)",
-        "channel": "sms",
-        "subject": "EMI Payment Overdue Warning",
-        "body_template": (
-            "Dear {customer}, your EMI installment of Nu. {balance_due} for {item} "
-            "(Ref: {reference}) is overdue by 30+ days. Please clear your dues promptly to avoid penalties. Bhutan Telecom."
-        ),
-        "variables": json.dumps(["customer", "balance_due", "item", "reference", "aging_bucket"]),
-        "is_active": True,
-    },
-    {
-        "name": "Critical Overdue (61+ Days)",
-        "channel": "sms",
-        "subject": "Urgent: EMI Critical Overdue",
-        "body_template": (
-            "URGENT: Dear {customer}, your account (Ref: {reference}) has an overdue EMI balance of "
-            "Nu. {balance_due} ({aging_bucket}). Immediate settlement is required. Call 1600 or visit your nearest BT office. Bhutan Telecom."
-        ),
-        "variables": json.dumps(["customer", "balance_due", "reference", "aging_bucket"]),
-        "is_active": True,
-    },
+]
+
+AVAILABLE_TEMPLATE_VARIABLES = [
+    "customer",
+    "balance_due",
+    "balance_due_short",
+    "installments_due",
+    "installments_text",
+    "item",
+    "reference",
+    "aging_bucket",
+    "payment_account",
+    "payment_email",
 ]
 
 
@@ -82,15 +87,21 @@ DEFAULT_TEMPLATES = [
 # ---------------------------------------------------------------------------
 
 async def ensure_default_templates(session: AsyncSession) -> List[NotificationTemplate]:
-    """Ensure default SMS reminder templates exist in the database."""
+    """Ensure exactly one SMS reminder template exists.
+
+    Existing template text is never overwritten here so edits made in the UI
+    survive restarts. The Alembic migration is responsible for one-time
+    replacements of the old three-template defaults.
+    """
     result = await session.execute(select(NotificationTemplate))
     existing = list(result.scalars().all())
-    if existing:
-        return existing
+    t_data = DEFAULT_TEMPLATES[0]
 
-    created = []
-    for t_data in DEFAULT_TEMPLATES:
-        template = NotificationTemplate(
+    default = next((t for t in existing if t.name == t_data["name"]), None)
+    changed = False
+
+    if default is None:
+        default = NotificationTemplate(
             name=t_data["name"],
             channel=t_data["channel"],
             subject=t_data["subject"],
@@ -98,13 +109,22 @@ async def ensure_default_templates(session: AsyncSession) -> List[NotificationTe
             variables=t_data["variables"],
             is_active=t_data["is_active"],
         )
-        session.add(template)
-        created.append(template)
+        session.add(default)
+        changed = True
+    elif not default.is_active:
+        default.is_active = True
+        changed = True
 
-    await session.commit()
-    for t in created:
-        await session.refresh(t)
-    return created
+    for template in existing:
+        if template is not default:
+            await session.delete(template)
+            changed = True
+
+    if changed:
+        await session.commit()
+        await session.refresh(default)
+
+    return [default]
 
 
 async def list_templates(session: AsyncSession) -> List[NotificationTemplateResponse]:
@@ -115,6 +135,29 @@ async def list_templates(session: AsyncSession) -> List[NotificationTemplateResp
     )
     templates = list(result.scalars().all())
     return [NotificationTemplateResponse.model_validate(t) for t in templates]
+
+
+async def update_template(
+    session: AsyncSession,
+    template_id: int,
+    payload: NotificationTemplateUpdate,
+) -> Optional[NotificationTemplateResponse]:
+    """Update the text of an existing SMS reminder template."""
+    result = await session.execute(
+        select(NotificationTemplate).where(NotificationTemplate.id == template_id)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        return None
+
+    template.body_template = payload.body_template.strip()
+    if payload.subject is not None:
+        template.subject = payload.subject.strip() or None
+    template.variables = json.dumps(AVAILABLE_TEMPLATE_VARIABLES)
+
+    await session.commit()
+    await session.refresh(template)
+    return NotificationTemplateResponse.model_validate(template)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +313,30 @@ async def mark_in_app_read(
 # Customer SMS Reminder Calculations & Preview
 # ---------------------------------------------------------------------------
 
+def _format_reminder_amount(value: Any) -> str:
+    """Format a reminder amount without .00 for whole numbers."""
+    if value is None:
+        return ""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+    if amount == amount.to_integral_value():
+        return f"{amount:,.0f}"
+    return f"{amount:,.2f}"
+
+
+def _format_installments(value: Any) -> str:
+    """Return a human-readable installment count, e.g. '2 installments'."""
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return "1 installment"
+    return f"{count} installment" if count == 1 else f"{count} installments"
+
+
 def _render_sms_template(
     template: str,
     candidate_data: Dict[str, Any],
@@ -337,6 +404,16 @@ async def get_reminder_candidates(
             Installment.contract_id,
             func.coalesce(func.sum(Installment.due_amount), 0).label("total_due"),
             func.coalesce(func.sum(Installment.received_amount), 0).label("total_rec"),
+            func.sum(
+                case(
+                    (
+                        func.coalesce(Installment.due_amount, 0)
+                        > Installment.received_amount,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("unpaid_installments"),
         )
         .where(Installment.due_month < month_start)
         .group_by(Installment.contract_id)
@@ -344,7 +421,7 @@ async def get_reminder_candidates(
     )
 
     query = (
-        select(Contract, subq.c.total_due, subq.c.total_rec)
+        select(Contract, subq.c.total_due, subq.c.total_rec, subq.c.unpaid_installments)
         .join(subq, Contract.id == subq.c.contract_id)
         .where(subq.c.total_due > subq.c.total_rec)
     )
@@ -377,7 +454,7 @@ async def get_reminder_candidates(
     with_mobile = 0
     missing_mobile = 0
 
-    for contract, total_due, total_rec in results:
+    for contract, total_due, total_rec, unpaid_installments in results:
         due_val = Decimal(str(total_due or 0))
         rec_val = Decimal(str(total_rec or 0))
         balance_due = float(max(Decimal(0), due_val - rec_val))
@@ -424,9 +501,14 @@ async def get_reminder_candidates(
             "reference": contract.reference,
             "item": contract.item or "Device",
             "balance_due": balance_due,
+            "balance_due_short": _format_reminder_amount(balance_due),
+            "installments_due": int(unpaid_installments or 0),
+            "installments_text": _format_installments(unpaid_installments),
             "aging_bucket": b_name,
             "overall_outstanding": outstanding,
             "mobile": digits,
+            "payment_account": settings.SMS_PAYMENT_ACCOUNT,
+            "payment_email": settings.SMS_PAYMENT_EMAIL,
         }
         msg = _render_sms_template(selected_template_text or "", data_dict)
 
@@ -496,6 +578,16 @@ async def send_customer_reminders(
             Installment.contract_id,
             func.coalesce(func.sum(Installment.due_amount), 0).label("total_due"),
             func.coalesce(func.sum(Installment.received_amount), 0).label("total_rec"),
+            func.sum(
+                case(
+                    (
+                        func.coalesce(Installment.due_amount, 0)
+                        > Installment.received_amount,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("unpaid_installments"),
         )
         .where(Installment.due_month < month_start)
         .group_by(Installment.contract_id)
@@ -503,7 +595,7 @@ async def send_customer_reminders(
     )
 
     query = (
-        select(Contract, subq.c.total_due, subq.c.total_rec)
+        select(Contract, subq.c.total_due, subq.c.total_rec, subq.c.unpaid_installments)
         .join(subq, Contract.id == subq.c.contract_id)
         .where(Contract.id.in_(contract_ids))
     )
@@ -519,7 +611,7 @@ async def send_customer_reminders(
     # while the database session stays single-threaded.
     targets: List[Dict[str, Any]] = []
 
-    for contract, total_due, total_rec in results:
+    for contract, total_due, total_rec, unpaid_installments in results:
         due_val = Decimal(str(total_due or 0))
         rec_val = Decimal(str(total_rec or 0))
         balance_due = float(max(Decimal(0), due_val - rec_val))
@@ -557,8 +649,13 @@ async def send_customer_reminders(
             "reference": contract.reference,
             "item": contract.item or "Device",
             "balance_due": balance_due,
+            "balance_due_short": _format_reminder_amount(balance_due),
+            "installments_due": int(unpaid_installments or 0),
+            "installments_text": _format_installments(unpaid_installments),
             "aging_bucket": b_name,
             "mobile": phone,
+            "payment_account": settings.SMS_PAYMENT_ACCOUNT,
+            "payment_email": settings.SMS_PAYMENT_EMAIL,
         }
         rendered_msg = _render_sms_template(selected_template_text or "", data_dict)
 

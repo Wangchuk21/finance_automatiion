@@ -14,6 +14,7 @@ import {
   RefreshCw,
   MessageSquare,
   Sparkles,
+  Save,
   X,
 } from "lucide-react";
 import {
@@ -46,6 +47,16 @@ const AGING_BUCKETS = [
   { label: "120+ Days (Critical)", value: "120+" },
 ];
 
+const SMS_TAGS = [
+  "customer",
+  "balance_due_short",
+  "installments_text",
+  "item",
+  "reference",
+  "payment_account",
+  "payment_email",
+];
+
 export function RemindersPage() {
   const [banner, setBanner] = React.useState<{ title: string; desc?: string; error?: boolean } | null>(null);
 
@@ -60,6 +71,9 @@ export function RemindersPage() {
   const [templates, setTemplates] = React.useState<NotificationTemplate[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [selectedTemplateId, setSelectedTemplateId] = React.useState<number | undefined>(undefined);
+  const [templateDraft, setTemplateDraft] = React.useState("");
+  const [savingTemplate, setSavingTemplate] = React.useState(false);
+  const loadedTemplateIdRef = React.useRef<number | undefined>(undefined);
   const [selectedContractIds, setSelectedContractIds] = React.useState<Set<number>>(new Set());
 
   // Filter states
@@ -199,6 +213,36 @@ export function RemindersPage() {
   };
 
   const activeTemplate = templates.find((t) => t.id === selectedTemplateId);
+
+  React.useEffect(() => {
+    if (activeTemplate && loadedTemplateIdRef.current !== activeTemplate.id) {
+      loadedTemplateIdRef.current = activeTemplate.id;
+      setTemplateDraft(activeTemplate.body_template);
+    }
+  }, [activeTemplate]);
+
+  const handleSaveTemplate = async () => {
+    if (!activeTemplate || !templateDraft.trim()) return;
+    try {
+      setSavingTemplate(true);
+      const updated = await notificationsApi.updateTemplate(activeTemplate.id, {
+        body_template: templateDraft,
+        subject: activeTemplate.subject,
+      });
+      setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      setTemplateDraft(updated.body_template);
+      showBanner("SMS template saved", "Future reminders will use this message.", false);
+      await loadCandidates();
+    } catch (err) {
+      showBanner(
+        "Failed to save SMS template",
+        err instanceof Error ? err.message : "Only administrators can edit templates.",
+        true,
+      );
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -441,38 +485,37 @@ export function RemindersPage() {
             <CardHeader className="py-3 px-4 border-b border-border">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  <CardTitle className="text-sm font-semibold">SMS Template & Preview</CardTitle>
+                  <CardTitle className="text-sm font-semibold">SMS Message</CardTitle>
                   <CardDescription className="text-xs">
-                    Select the SMS template used when dispatching reminders.
+                    Edit the message sent to customers, then save it for all future reminders.
                   </CardDescription>
                 </div>
-                {templates.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    <Label className="text-xs text-text-secondary shrink-0">Template:</Label>
-                    <select
-                      value={selectedTemplateId || ""}
-                      onChange={(e) => setSelectedTemplateId(Number(e.target.value))}
-                      className="text-xs bg-surface border border-border rounded-md px-2.5 py-1 text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      {templates.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <Button
+                  size="sm"
+                  onClick={handleSaveTemplate}
+                  disabled={!activeTemplate || savingTemplate || !templateDraft.trim()}
+                >
+                  <Save className="h-3.5 w-3.5 mr-1.5" />
+                  {savingTemplate ? "Saving..." : "Save message"}
+                </Button>
               </div>
             </CardHeader>
             <CardContent className="p-4 bg-neutral-light/20">
-              <div className="text-xs font-mono bg-card border border-border rounded-lg p-3 text-text-primary leading-relaxed">
-                {activeTemplate?.body_template || "Select a template"}
-              </div>
-              <div className="flex items-center gap-4 mt-2 text-[11px] text-text-secondary">
+              <textarea
+                value={templateDraft}
+                onChange={(e) => setTemplateDraft(e.target.value)}
+                rows={4}
+                className="w-full text-xs font-mono bg-card border border-border rounded-lg p-3 text-text-primary leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+                placeholder="Dear {customer}, EMI of Nu. {balance_due_short} ({installments_text}) is due..."
+              />
+              <div className="flex flex-col gap-1 mt-2 text-[11px] text-text-secondary">
                 <span>
-                  Estimated length: ~{activeTemplate?.body_template.length || 0} chars (1 SMS message)
+                  Estimated length: ~{templateDraft.length} chars
+                  {templateDraft.length > 160 ? " (may split into multiple SMS)" : " (1 SMS message)"}
                 </span>
-                <span>• Available tags: {"{customer}"}, {"{balance_due}"}, {"{item}"}, {"{reference}"}, {"{aging_bucket}"}</span>
+                <span>
+                  Available tags: {SMS_TAGS.map((tag) => `{${tag}}`).join(", ")}
+                </span>
               </div>
             </CardContent>
           </Card>

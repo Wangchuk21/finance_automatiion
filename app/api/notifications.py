@@ -12,6 +12,7 @@ from app.schemas.notifications import (
     MarkReadRequest,
     NotificationHistoryResponse,
     NotificationTemplateResponse,
+    NotificationTemplateUpdate,
     ReminderPreviewResponse,
     SendRemindersRequest,
     SendRemindersResponse,
@@ -72,6 +73,27 @@ async def list_notification_templates(
     return await notification_service.list_templates(session=session)
 
 
+@router.put("/templates/{template_id}", response_model=NotificationTemplateResponse)
+async def update_notification_template(
+    template_id: int,
+    payload: NotificationTemplateUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Update the text of the SMS reminder template."""
+    template = await notification_service.update_template(
+        session=session,
+        template_id=template_id,
+        payload=payload,
+    )
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification template not found",
+        )
+    return template
+
+
 # ---------------------------------------------------------------------------
 # Customer Reminders (SMS)
 # ---------------------------------------------------------------------------
@@ -83,6 +105,7 @@ async def get_reminder_candidates(
     channel: Optional[str] = Query(None, description="all, internal, external"),
     min_balance: float = Query(1.0, ge=0),
     template_id: Optional[int] = Query(None),
+    custom_template: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
@@ -96,6 +119,7 @@ async def get_reminder_candidates(
         channel=channel,
         min_balance=min_balance,
         template_id=template_id,
+        custom_template=custom_template,
     )
 
 
