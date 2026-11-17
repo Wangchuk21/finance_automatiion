@@ -2,7 +2,7 @@
 
 import React from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Eye, EyeOff, Check, X, AlertCircle, Loader2, Shield } from "lucide-react";
+import { Eye, EyeOff, Check, X, AlertCircle, Loader2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,9 +74,7 @@ export function SetPasswordPage() {
     <div className="min-h-screen flex items-center justify-center bg-neutral-light/50 p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-4 w-12 h-12 rounded-xl bg-warning/10 flex items-center justify-center">
-            <Shield className="h-7 w-7 text-warning" />
-          </div>
+          <img src="/bt-logo.png" alt="Bhutan Telecom" className="mx-auto mb-3 h-14 w-auto" />
           <CardTitle className="text-2xl">Set New Password</CardTitle>
           <CardDescription>
             Your temporary password has expired. Please create a new secure password.

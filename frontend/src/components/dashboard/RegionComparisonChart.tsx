@@ -129,7 +129,7 @@ export function RegionComparisonChart({ data, onRegionClick, className }: Region
           ]}
         />
         <Legend verticalAlign="bottom" wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }} />
-        <Bar dataKey="receivable" name="Receivable" fill="#1F4FD8" radius={[0, 4, 4, 0]} maxBarSize={32} onClick={(entry) => handleBarClick(entry, "receivable")} />
+        <Bar dataKey="receivable" name="Receivable" fill="#F37B26" radius={[0, 4, 4, 0]} maxBarSize={32} onClick={(entry) => handleBarClick(entry, "receivable")} />
         <Bar dataKey="collected" name="Collected" fill="#16A34A" radius={[0, 4, 4, 0]} maxBarSize={32} onClick={(entry) => handleBarClick(entry, "collected")} />
         <Bar dataKey="balance_due" name="Balance Due" fill="#DC2626" radius={[0, 4, 4, 0]} maxBarSize={32} onClick={(entry) => handleBarClick(entry, "balance_due")} />
       </BarChart>

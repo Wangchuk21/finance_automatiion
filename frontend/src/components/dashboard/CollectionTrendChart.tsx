@@ -48,18 +48,18 @@ export function CollectionTrendChart({ data, className }: CollectionTrendChartPr
               type="monotone"
               dataKey="internal"
               name="Internal"
-              stroke="#1F4FD8"
+              stroke="#5FBB49"
               strokeWidth={2}
-              dot={{ r: 4, fill: "#1F4FD8" }}
+              dot={{ r: 4, fill: "#5FBB49" }}
               activeDot={{ r: 6 }}
             />
             <Line
               type="monotone"
               dataKey="external"
               name="External"
-              stroke="#D97706"
+              stroke="#F37B26"
               strokeWidth={2}
-              dot={{ r: 4, fill: "#D97706" }}
+              dot={{ r: 4, fill: "#F37B26" }}
               activeDot={{ r: 6 }}
             />
           </LineChart>

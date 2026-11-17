@@ -388,7 +388,7 @@ export function RemindersPage() {
                 <Button
                   size="sm"
                   onClick={() => setConfirmModalOpen(true)}
-                  className="h-8 text-xs gap-1.5 bg-primary text-white hover:bg-primary-dark"
+                  className="h-8 text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary-dark"
                 >
                   <Send className="h-3.5 w-3.5" />
                   <span>Send SMS Reminders ({selectedCount})</span>
@@ -412,7 +412,7 @@ export function RemindersPage() {
                       className={cn(
                         "px-3 py-1.5 rounded-md text-xs font-medium transition-colors border",
                         selectedBucket === b.value
-                          ? "bg-primary text-white border-primary shadow-sm"
+                          ? "bg-primary text-primary-foreground border-primary shadow-sm"
                           : "bg-surface border-border text-text-secondary hover:text-text-primary hover:bg-neutral-light/50"
                       )}
                     >
@@ -803,7 +803,7 @@ export function RemindersPage() {
               size="sm"
               onClick={handleSendReminders}
               disabled={isSending}
-              className="gap-1.5 bg-primary text-white hover:bg-primary-dark"
+              className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary-dark"
             >
               <Send className="h-3.5 w-3.5" />
               <span>{isSending ? "Dispatching..." : "Confirm & Send"}</span>

@@ -316,7 +316,7 @@ export function SettingsPage() {
             </div>
             <div>
               <p className="text-text-secondary">From Address</p>
-              <p className="font-mono text-text-primary">Finance Automation <span>{"notifications@example.com"}</span></p>
+              <p className="font-mono text-text-primary">Finance BT <span>{"notifications@example.com"}</span></p>
             </div>
           </div>
           <p className="text-xs text-text-secondary">

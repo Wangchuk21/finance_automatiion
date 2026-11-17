@@ -503,7 +503,7 @@ const DRILL_METRICS: Record<
 > = {
   receivable: {
     label: "Receivable",
-    activeButton: "bg-primary text-white shadow-sm",
+    activeButton: "bg-primary text-primary-foreground shadow-sm",
     header: "text-primary",
     cell: "text-primary font-semibold",
     tint: "bg-primary/5",

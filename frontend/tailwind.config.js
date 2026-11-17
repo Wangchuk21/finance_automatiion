@@ -16,8 +16,16 @@ export default {
           secondary: "#6B7280",
         },
         primary: {
-          DEFAULT: "#1F4FD8",
-          foreground: "#FFFFFF",
+          DEFAULT: "#5FBB49",
+          foreground: "#0B1F08",
+          dark: "#4A9E37",
+          light: "#EAF7E6",
+        },
+        accent: {
+          DEFAULT: "#F37B26",
+          foreground: "#0B1F08",
+          dark: "#D2621A",
+          light: "#FEE9DB",
         },
         success: {
           DEFAULT: "#16A34A",
@@ -25,9 +33,9 @@ export default {
           dark: "#166534",
         },
         warning: {
-          DEFAULT: "#D97706",
-          light: "#FEF3C7",
-          dark: "#B45309",
+          DEFAULT: "#F37B26",
+          light: "#FEE9DB",
+          dark: "#D2621A",
         },
         critical: {
           DEFAULT: "#DC2626",
@@ -41,7 +49,7 @@ export default {
         },
         border: "#E5E7EB",
         input: "#E5E7EB",
-        ring: "#1F4FD8",
+        ring: "#5FBB49",
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],

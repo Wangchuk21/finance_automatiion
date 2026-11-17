@@ -35,7 +35,7 @@ export function AgingBucketChart({ data, className }: AgingBucketChartProps) {
               formatter={(value: any) => [`Nu. ${Number(value || 0).toLocaleString("en-IN")}`, "Amount"]}
             />
             <Legend />
-            <Bar dataKey="amount" name="Amount" fill="#1F4FD8" radius={[0, 4, 4, 0]} maxBarSize={32}>
+            <Bar dataKey="amount" name="Amount" fill="#5FBB49" radius={[0, 4, 4, 0]} maxBarSize={32}>
               {data.map((_, index) => (
                 <Cell key={`cell-${index}`} fill={getBucketColor(data[index].bucket)} />
               ))}
@@ -55,5 +55,5 @@ function getBucketColor(bucket: string): string {
     "91-120": "#EF4444",
     "120+": "#DC2626",
   };
-  return colors[bucket] || "#1F4FD8";
+  return colors[bucket] || "#5FBB49";
 }

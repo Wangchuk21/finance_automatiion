@@ -45,10 +45,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           <div className={cn("flex h-16 items-center justify-between px-4 border-b border-border", collapsed && "justify-center")}>
             {!collapsed && (
               <Link to="/" className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-                  <BarChart2 className="h-5 w-5 text-primary-foreground" />
-                </div>
-                <span className="font-semibold text-text-primary">Finance</span>
+                <img src="/bt-logo.png" alt="Bhutan Telecom" className="h-8 w-auto" />
+                <span className="font-semibold text-text-primary">Finance BT</span>
               </Link>
             )}
             <Button
@@ -95,7 +93,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           <div className="p-4 border-t border-border">
             {!collapsed && (
               <div className="text-xs text-text-secondary text-center">
-                Finance Automation v0.1.0
+                Finance BT v0.1.0
               </div>
             )}
           </div>
