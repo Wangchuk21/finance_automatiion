@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Loader2, Mail, Key, Shield, AlertCircle, CheckCircle } from "lucide-react";
+import { Plus, Loader2, Mail, Key, AlertCircle, CheckCircle, Pencil, Trash2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { authApi, type UserListResponse, type UserCreateRequest, type UserCreateResponse } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
 type UserRole = "admin" | "finance_uploader" | "viewer";
@@ -50,6 +51,7 @@ const roleColors: Record<UserRole, string> = {
 };
 
 export function SettingsPage() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = React.useState<UserListResponse[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [search, setSearch] = React.useState("");
@@ -74,8 +76,15 @@ export function SettingsPage() {
   const [resetError, setResetError] = React.useState<string | null>(null);
   const [resetSuccess, setResetSuccess] = React.useState<string | null>(null);
 
-  // Deactivate confirmation
-  const [deactivateUser, setDeactivateUser] = React.useState<UserListResponse | null>(null);
+  // Edit role modal state
+  const [editUser, setEditUser] = React.useState<UserListResponse | null>(null);
+  const [editRole, setEditRole] = React.useState<UserRole>("viewer");
+  const [editLoading, setEditLoading] = React.useState(false);
+  const [editError, setEditError] = React.useState<string | null>(null);
+
+  // Delete confirmation
+  const [deleteUser, setDeleteUser] = React.useState<UserListResponse | null>(null);
+  const [deleteLoading, setDeleteLoading] = React.useState(false);
 
   React.useEffect(() => {
     loadUsers();
@@ -132,15 +141,47 @@ export function SettingsPage() {
     }
   };
 
-  const handleDeactivate = async () => {
-    if (!deactivateUser) return;
+  const handleEditRole = (user: UserListResponse) => {
+    setEditUser(user);
+    setEditRole((user.role as UserRole) || "viewer");
+    setEditError(null);
+  };
+
+  const confirmEditRole = async () => {
+    if (!editUser) return;
+    setEditError(null);
+    setEditLoading(true);
     try {
-      await authApi.deactivateUser(deactivateUser.id);
+      await authApi.updateUser(editUser.id, { role: editRole });
+      await loadUsers();
+      setEditUser(null);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Failed to update role");
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteUser) return;
+    setDeleteLoading(true);
+    try {
+      await authApi.deleteUser(deleteUser.id);
       await loadUsers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to deactivate user");
+      setError(err instanceof Error ? err.message : "Failed to delete user");
     } finally {
-      setDeactivateUser(null);
+      setDeleteLoading(false);
+      setDeleteUser(null);
+    }
+  };
+
+  const handleRestore = async (user: UserListResponse) => {
+    try {
+      await authApi.updateUser(user.id, { is_active: true });
+      await loadUsers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to restore user");
     }
   };
 
@@ -351,8 +392,17 @@ export function SettingsPage() {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() => handleEditRole(user)}
+                            disabled={currentUser?.id === user.id || editLoading}
+                          >
+                            <Pencil className="h-4 w-4 mr-1" />
+                            Edit Role
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => handleResetPassword(user)}
-                            disabled={user.id === 1 || resetLoading}
+                            disabled={currentUser?.id === user.id || resetLoading}
                           >
                             <Key className="h-4 w-4 mr-1" />
                             Reset Password
@@ -362,22 +412,22 @@ export function SettingsPage() {
                               variant="outline"
                               size="sm"
                               className="text-success hover:bg-success/10"
-                              onClick={() => setDeactivateUser(user)}
-                              disabled={user.id === 1}
+                              onClick={() => handleRestore(user)}
+                              disabled={currentUser?.id === user.id}
                             >
-                              <Shield className="h-4 w-4 mr-1" />
-                              Activate
+                              <RotateCcw className="h-4 w-4 mr-1" />
+                              Restore
                             </Button>
                           ) : (
                             <Button
                               variant="outline"
                               size="sm"
                               className="text-critical hover:bg-critical/10"
-                              onClick={() => setDeactivateUser(user)}
-                              disabled={user.id === 1}
+                              onClick={() => setDeleteUser(user)}
+                              disabled={currentUser?.id === user.id}
                             >
-                              <Shield className="h-4 w-4 mr-1" />
-                              Deactivate
+                              <Trash2 className="h-4 w-4 mr-1" />
+                              Delete
                             </Button>
                           )}
                         </div>
@@ -432,25 +482,65 @@ export function SettingsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Deactivate Confirm Dialog */}
-      <Dialog open={!!deactivateUser} onOpenChange={(open) => !open && setDeactivateUser(null)}>
+      {/* Edit Role Dialog */}
+      <Dialog open={!!editUser} onOpenChange={(open) => !open && setEditUser(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{deactivateUser?.is_active ? "Deactivate User" : "Activate User"}</DialogTitle>
+            <DialogTitle>Edit Role</DialogTitle>
             <DialogDescription>
-              Are you sure you want to {deactivateUser?.is_active ? "deactivate" : "activate"} <strong>{deactivateUser?.username}</strong>?
-              {deactivateUser?.is_active ? " They will not be able to log in." : " They will be able to log in again."}
+              Change the role for <strong>{editUser?.username}</strong>. This takes effect immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {editError && (
+              <Alert variant="destructive" className="text-sm">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{editError}</AlertDescription>
+              </Alert>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="edit-role">Role</Label>
+              <Select value={editRole} onValueChange={(v) => setEditRole(v as UserRole)} disabled={editLoading}>
+                <SelectTrigger id="edit-role">
+                  <SelectValue placeholder="Select role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="finance_uploader">Finance Uploader</SelectItem>
+                  <SelectItem value="viewer">Viewer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditUser(null)} disabled={editLoading}>
+              Cancel
+            </Button>
+            <Button onClick={confirmEditRole} disabled={editLoading || !editUser}>
+              {editLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Pencil className="h-4 w-4 mr-2" />}
+              Save Role
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirm Dialog */}
+      <Dialog open={!!deleteUser} onOpenChange={(open) => !open && setDeleteUser(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete User</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{deleteUser?.username}</strong>? They will no longer be able to
+              log in. Their upload and audit history is preserved, and you can restore them later.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeactivateUser(null)}>
+            <Button variant="outline" onClick={() => setDeleteUser(null)} disabled={deleteLoading}>
               Cancel
             </Button>
-            <Button
-              variant={deactivateUser?.is_active ? "destructive" : "default"}
-              onClick={handleDeactivate}
-            >
-              {deactivateUser?.is_active ? "Deactivate" : "Activate"}
+            <Button variant="destructive" onClick={handleDelete} disabled={deleteLoading}>
+              {deleteLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2" />}
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>

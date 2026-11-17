@@ -81,6 +81,16 @@ class UserDeactivateResponse(BaseModel):
     message: str
 
 
+class UserUpdateRequest(BaseModel):
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+
+
+class UserUpdateResponse(BaseModel):
+    message: str
+    user: dict
+
+
 class UserListResponse(BaseModel):
     id: int
     username: str
@@ -594,6 +604,126 @@ async def deactivate_user(
 
     return UserDeactivateResponse(
         message=f"User {user.username} deactivated successfully",
+    )
+
+
+@router.patch("/users/{user_id}", response_model=UserUpdateResponse)
+async def update_user(
+    user_id: int,
+    payload: UserUpdateRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    admin: User = Depends(_require_admin),
+):
+    """
+    Update a user's role and/or active status.
+    Only admins can edit users.
+    """
+    ip = _get_client_ip(request)
+
+    user = await session.get(User, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if payload.role is None and payload.is_active is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nothing to update",
+        )
+
+    if user.id == admin.id and (
+        payload.role is not None or payload.is_active is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own role or status",
+        )
+
+    changes: dict = {}
+
+    if payload.role is not None and payload.role.value != user.role:
+        user.role = payload.role.value
+        changes["role"] = payload.role.value
+
+    if payload.is_active is not None and payload.is_active != user.is_active:
+        user.is_active = payload.is_active
+        changes["is_active"] = payload.is_active
+        if payload.is_active:
+            # Restoring access: clear lockout state.
+            user.failed_login_count = 0
+            user.locked_until = None
+        else:
+            # Deactivation: invalidate all existing sessions.
+            user.token_version += 1
+
+    if not changes:
+        return UserUpdateResponse(
+            message="No changes applied",
+            user=_user_to_dict(user),
+        )
+
+    await session.commit()
+    await session.refresh(user)
+
+    await write_auth_audit(
+        session,
+        "user_updated",
+        user_id=admin.id,
+        ip_address=ip,
+        user_agent=request.headers.get("User-Agent"),
+        details={"target_user_id": user.id, "target_username": user.username, **changes},
+    )
+
+    return UserUpdateResponse(
+        message=f"User {user.username} updated successfully",
+        user=_user_to_dict(user),
+    )
+
+
+@router.delete("/users/{user_id}", response_model=UserDeactivateResponse)
+async def delete_user(
+    user_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    admin: User = Depends(_require_admin),
+):
+    """
+    Delete a user (soft delete: marks inactive and invalidates sessions).
+    Only admins can delete users. Upload/audit history is preserved.
+    """
+    ip = _get_client_ip(request)
+
+    user = await session.get(User, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete yourself",
+        )
+
+    user.is_active = False
+    user.token_version += 1  # Invalidate all tokens
+    await session.commit()
+
+    await write_auth_audit(
+        session,
+        "user_deleted",
+        user_id=admin.id,
+        ip_address=ip,
+        user_agent=request.headers.get("User-Agent"),
+        details={"target_user_id": user.id, "target_username": user.username},
+    )
+
+    return UserDeactivateResponse(
+        message=f"User {user.username} deleted successfully",
     )
 
 

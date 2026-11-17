@@ -646,6 +646,25 @@ export interface UserDeactivateResponse {
   message: string;
 }
 
+export interface UserUpdateRequest {
+  role?: "admin" | "finance_uploader" | "viewer";
+  is_active?: boolean;
+}
+
+export interface UserUpdateResponse {
+  message: string;
+  user: {
+    id: number;
+    username: string;
+    email: string;
+    full_name: string | null;
+    role: string;
+    is_active: boolean;
+    must_change_password: boolean;
+    last_login: string | null;
+  };
+}
+
 export interface UserListResponse {
   id: number;
   username: string;
@@ -748,6 +767,19 @@ export const authApi = {
   async deactivateUser(userId: number): Promise<UserDeactivateResponse> {
     return fetchJson<UserDeactivateResponse>(`/auth/users/${userId}/deactivate`, {
       method: "POST",
+    });
+  },
+
+  async updateUser(userId: number, data: UserUpdateRequest): Promise<UserUpdateResponse> {
+    return fetchJson<UserUpdateResponse>(`/auth/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  },
+
+  async deleteUser(userId: number): Promise<UserDeactivateResponse> {
+    return fetchJson<UserDeactivateResponse>(`/auth/users/${userId}`, {
+      method: "DELETE",
     });
   },
 

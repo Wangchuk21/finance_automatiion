@@ -573,3 +573,97 @@ class TestRateLimiting:
 
 # Helper import
 from datetime import timedelta
+
+class TestUserManagementUpdates:
+    """Test admin edit-role and delete-user endpoints."""
+
+    def _target_user(self):
+        return User(
+            id=2,
+            username="target",
+            email="target@example.com",
+            password_hash=hash_password("Pass123!@#"),
+            is_active=True,
+            role=UserRole.VIEWER.value,
+            must_change_password=False,
+            token_version=1,
+        )
+
+    def test_update_user_role(self, client, mock_user):
+        """Admin can change a user's role."""
+        from app.core.auth import get_current_user as get_current_user_dep
+
+        target_user = self._target_user()
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=target_user)
+        mock_session.commit = AsyncMock()
+        mock_session.refresh = AsyncMock()
+
+        app.dependency_overrides[get_session] = lambda: mock_session
+        app.dependency_overrides[get_current_user_dep] = lambda: mock_user
+
+        response = client.patch(
+            "/api/v1/auth/users/2",
+            json={"role": "finance_uploader"},
+            cookies={"access_token": "dummy", "refresh_token": "dummy"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert target_user.role == "finance_uploader"
+        assert response.json()["user"]["role"] == "finance_uploader"
+
+    def test_delete_user_is_soft(self, client, mock_user):
+        """Delete marks the user inactive and invalidates sessions."""
+        from app.core.auth import get_current_user as get_current_user_dep
+
+        target_user = self._target_user()
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=target_user)
+        mock_session.commit = AsyncMock()
+
+        app.dependency_overrides[get_session] = lambda: mock_session
+        app.dependency_overrides[get_current_user_dep] = lambda: mock_user
+
+        response = client.delete(
+            "/api/v1/auth/users/2",
+            cookies={"access_token": "dummy", "refresh_token": "dummy"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert target_user.is_active is False
+        assert target_user.token_version == 2
+
+    def test_cannot_change_own_role(self, client, mock_user):
+        """Admin cannot change their own role."""
+        from app.core.auth import get_current_user as get_current_user_dep
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=mock_user)
+
+        app.dependency_overrides[get_session] = lambda: mock_session
+        app.dependency_overrides[get_current_user_dep] = lambda: mock_user
+
+        response = client.patch(
+            "/api/v1/auth/users/1",
+            json={"role": "viewer"},
+            cookies={"access_token": "dummy", "refresh_token": "dummy"},
+        )
+
+        assert response.status_code == 400
+
+    def test_cannot_delete_self(self, client, mock_user):
+        """Admin cannot delete themselves."""
+        from app.core.auth import get_current_user as get_current_user_dep
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=mock_user)
+
+        app.dependency_overrides[get_session] = lambda: mock_session
+        app.dependency_overrides[get_current_user_dep] = lambda: mock_user
+
+        response = client.delete(
+            "/api/v1/auth/users/1",
+            cookies={"access_token": "dummy", "refresh_token": "dummy"},
+        )
+
+        assert response.status_code == 400

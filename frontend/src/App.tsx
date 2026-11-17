@@ -38,7 +38,14 @@ function AppRoutes() {
           <Route path="contracts" element={<ContractsPage />} />
           <Route path="reminders" element={<RemindersPage />} />
           <Route path="credit-check" element={<CreditCheckPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route
+            path="settings"
+            element={
+              <RouteGuard allowedRoles={["admin"]}>
+                <SettingsPage />
+              </RouteGuard>
+            }
+          />
         </Route>
       </Route>
 

@@ -127,10 +127,11 @@ async def get_reminder_candidates(
 async def send_customer_reminders(
     payload: SendRemindersRequest,
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.FINANCE_UPLOADER)),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """
     Dispatch SMS reminders to customers for the specified contract IDs.
+    Only admins can send customer SMS reminders.
     """
     if not payload.contract_ids:
         raise HTTPException(

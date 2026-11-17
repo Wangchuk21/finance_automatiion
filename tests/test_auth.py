@@ -192,3 +192,46 @@ class TestUserModel:
         assert history[1] == "current_hash"
         assert history[2] == "old1"
         assert history[3] == "old2"
+
+class TestRolePermissions:
+    """Test role-based access control dependencies."""
+
+    def _user(self, role: str) -> User:
+        return User(
+            id=9,
+            username=f"user_{role}",
+            email=f"{role}@example.com",
+            password_hash="not-a-real-hash",
+            role=role,
+            is_active=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_admin_role_allows_admin(self):
+        """Admin passes an admin-only guard."""
+        from app.core.auth import require_role
+
+        guard = require_role(UserRole.ADMIN)
+        assert await guard(self._user(UserRole.ADMIN.value)) is not None
+
+    @pytest.mark.asyncio
+    async def test_viewer_blocked_from_admin_guard(self):
+        """Viewer is forbidden from an admin-only guard."""
+        from fastapi import HTTPException
+        from app.core.auth import require_role
+
+        guard = require_role(UserRole.ADMIN)
+        with pytest.raises(HTTPException) as exc:
+            await guard(self._user(UserRole.VIEWER.value))
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_uploader_blocked_from_sms_send_guard(self):
+        """Finance uploaders can no longer send SMS reminders (admin only)."""
+        from fastapi import HTTPException
+        from app.core.auth import require_role
+
+        guard = require_role(UserRole.ADMIN)
+        with pytest.raises(HTTPException) as exc:
+            await guard(self._user(UserRole.FINANCE_UPLOADER.value))
+        assert exc.value.status_code == 403

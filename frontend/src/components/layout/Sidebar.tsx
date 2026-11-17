@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAuth } from "@/context/AuthContext";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -26,6 +27,10 @@ const navigation = [
 
 export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const location = useLocation();
+  const { user } = useAuth();
+  const visibleNavigation = navigation.filter(
+    (item) => item.href !== "/settings" || user?.role === "admin"
+  );
 
   return (
     <TooltipProvider>
@@ -59,7 +64,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
           {/* Navigation */}
           <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
-            {navigation.map((item) => {
+            {visibleNavigation.map((item) => {
               const isActive = location.pathname === item.href || (item.href !== "/" && location.pathname.startsWith(item.href));
               return (
                 <Tooltip key={item.name} open={collapsed ? undefined : false}>

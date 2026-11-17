@@ -36,6 +36,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
 const AGING_BUCKETS = [
@@ -58,6 +59,8 @@ const SMS_TAGS = [
 ];
 
 export function RemindersPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [banner, setBanner] = React.useState<{ title: string; desc?: string; error?: boolean } | null>(null);
 
   const showBanner = (title: string, desc?: string, error: boolean = false) => {
@@ -362,7 +365,7 @@ export function RemindersPage() {
           </div>
 
           {/* Main Action Banner */}
-          {selectedCount > 0 && (
+          {isAdmin && selectedCount > 0 && (
             <div className="sticky top-20 z-20 bg-primary/10 border border-primary/30 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 shadow-md backdrop-blur-md">
               <div className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-primary" />
@@ -487,23 +490,28 @@ export function RemindersPage() {
                 <div>
                   <CardTitle className="text-sm font-semibold">SMS Message</CardTitle>
                   <CardDescription className="text-xs">
-                    Edit the message sent to customers, then save it for all future reminders.
+                    {isAdmin
+                      ? "Edit the message sent to customers, then save it for all future reminders."
+                      : "Preview of the message sent to customers."}
                   </CardDescription>
                 </div>
-                <Button
-                  size="sm"
-                  onClick={handleSaveTemplate}
-                  disabled={!activeTemplate || savingTemplate || !templateDraft.trim()}
-                >
-                  <Save className="h-3.5 w-3.5 mr-1.5" />
-                  {savingTemplate ? "Saving..." : "Save message"}
-                </Button>
+                {isAdmin && (
+                  <Button
+                    size="sm"
+                    onClick={handleSaveTemplate}
+                    disabled={!activeTemplate || savingTemplate || !templateDraft.trim()}
+                  >
+                    <Save className="h-3.5 w-3.5 mr-1.5" />
+                    {savingTemplate ? "Saving..." : "Save message"}
+                  </Button>
+                )}
               </div>
             </CardHeader>
             <CardContent className="p-4 bg-neutral-light/20">
               <textarea
                 value={templateDraft}
                 onChange={(e) => setTemplateDraft(e.target.value)}
+                readOnly={!isAdmin}
                 rows={4}
                 className="w-full text-xs font-mono bg-card border border-border rounded-lg p-3 text-text-primary leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary resize-y"
                 placeholder="Dear {customer}, EMI of Nu. {balance_due_short} ({installments_text}) is due..."
@@ -548,7 +556,8 @@ export function RemindersPage() {
                               .every((c) => selectedContractIds.has(c.contract_id))
                           }
                           onChange={(e) => handleSelectAll(e.target.checked)}
-                          className="rounded border-border text-primary focus:ring-primary"
+                          disabled={!isAdmin}
+                          className="rounded border-border text-primary focus:ring-primary disabled:opacity-30"
                         />
                       </th>
                       <th className="p-3 text-left">Customer</th>
@@ -589,7 +598,7 @@ export function RemindersPage() {
                               <input
                                 type="checkbox"
                                 checked={isSelected}
-                                disabled={!hasPhone}
+                                disabled={!isAdmin || !hasPhone}
                                 onChange={() => handleToggleRow(c.contract_id)}
                                 className="rounded border-border text-primary focus:ring-primary disabled:opacity-30"
                               />
