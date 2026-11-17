@@ -19,7 +19,16 @@ from app.core.confirm import verify_confirm_code
 from app.core.installments import determine_installment_status
 from app.core.metrics import calculate_months_left
 from app.db.session import get_session
-from app.models import Contract, ContractClosure, ContractState, Installment, User, UserRole
+from app.models import (
+    Contract,
+    ContractClosure,
+    ContractState,
+    Installment,
+    InstallmentHistory,
+    Upload,
+    User,
+    UserRole,
+)
 from app.schemas.contracts import ContractUpdateRequest
 from app.schemas.uploads import CloseContractRequest, CloseContractResponse
 
@@ -510,6 +519,48 @@ async def get_contract_installments(
                 "external_amount": float(installment.external_amount or 0),
                 "cell_status": installment.cell_status,
                 "status": status.value,
+            }
+        )
+    return data
+
+
+@router.get("/{contract_id}/installments/{installment_id}/history")
+async def get_installment_history(
+    contract_id: int,
+    installment_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get upload/source history for one installment (file names and changes)."""
+    installment = await session.get(Installment, installment_id)
+    if not installment or installment.contract_id != contract_id:
+        raise HTTPException(status_code=404, detail="Installment not found")
+
+    rows = (
+        await session.execute(
+            select(InstallmentHistory, Upload)
+            .outerjoin(Upload, Upload.id == InstallmentHistory.upload_id)
+            .where(InstallmentHistory.installment_id == installment_id)
+            .order_by(InstallmentHistory.changed_at.desc(), InstallmentHistory.id.desc())
+        )
+    ).all()
+
+    def _val(value: Optional[Decimal]) -> Optional[float]:
+        return float(value) if value is not None else None
+
+    data = []
+    for history, upload in rows:
+        data.append(
+            {
+                "id": history.id,
+                "upload_id": history.upload_id,
+                "file_name": upload.file_name if upload else None,
+                "upload_type": upload.upload_type.value if upload and upload.upload_type else None,
+                "upload_time": upload.upload_time.isoformat() if upload and upload.upload_time else None,
+                "changed_at": history.changed_at.isoformat() if history.changed_at else None,
+                "previous_status": history.previous_status.value if history.previous_status else None,
+                "new_status": history.new_status.value if history.new_status else None,
+                "previous_received": _val(history.previous_received),
+                "new_received": _val(history.new_received),
             }
         )
     return data

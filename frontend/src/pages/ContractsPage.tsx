@@ -52,6 +52,7 @@ import {
   type ContractListItem,
   type ContractListResponse,
   type ContractUpdateRequest,
+  type InstallmentHistoryEntry,
 } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { cn, formatDate, formatMonthYear, formatNumber, getStatusBadgeVariant } from "@/lib/utils";
@@ -1102,6 +1103,46 @@ function ContractDetailDrawer({
   const [closeNote, setCloseNote] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [expandedInstallmentId, setExpandedInstallmentId] = React.useState<number | null>(null);
+  const [installmentHistory, setInstallmentHistory] = React.useState<
+    Record<number, { loading: boolean; error: string | null; entries: InstallmentHistoryEntry[] }>
+  >({});
+
+  React.useEffect(() => {
+    setExpandedInstallmentId(null);
+    setInstallmentHistory({});
+  }, [contract?.id]);
+
+  const toggleInstallmentHistory = async (installmentId: number) => {
+    if (!contract) return;
+    if (expandedInstallmentId === installmentId) {
+      setExpandedInstallmentId(null);
+      return;
+    }
+    setExpandedInstallmentId(installmentId);
+    const existing = installmentHistory[installmentId];
+    if (existing && existing.entries.length > 0 && !existing.error) return;
+    setInstallmentHistory((prev) => ({
+      ...prev,
+      [installmentId]: { loading: true, error: null, entries: prev[installmentId]?.entries || [] },
+    }));
+    try {
+      const entries = await contractsApi.getInstallmentHistory(contract.id, installmentId);
+      setInstallmentHistory((prev) => ({
+        ...prev,
+        [installmentId]: { loading: false, error: null, entries },
+      }));
+    } catch (err) {
+      setInstallmentHistory((prev) => ({
+        ...prev,
+        [installmentId]: {
+          loading: false,
+          error: err instanceof Error ? err.message : "Failed to load source history",
+          entries: [],
+        },
+      }));
+    }
+  };
 
   const handleCloseContract = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1365,7 +1406,7 @@ function ContractDetailDrawer({
                     Installment schedule
                   </h3>
                   <span className="text-xs text-text-secondary">
-                    {installments?.length ?? 0} month{(installments?.length ?? 0) === 1 ? "" : "s"}
+                    {installments?.length ?? 0} month{(installments?.length ?? 0) === 1 ? "" : "s"} · click a row for source
                   </span>
                 </div>
                 {!installments || installments.length === 0 ? (
@@ -1373,7 +1414,7 @@ function ContractDetailDrawer({
                     No installment rows recorded for this contract.
                   </p>
                 ) : (
-                  <div className="max-h-[320px] overflow-y-auto">
+                  <div className="max-h-[360px] overflow-y-auto">
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -1385,30 +1426,95 @@ function ContractDetailDrawer({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {installments.map((installment) => (
-                          <TableRow key={installment.id}>
-                            <TableCell className="whitespace-nowrap text-text-primary">
-                              {formatMonthYear(installment.due_month)}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums">
-                              {formatNumber(installment.due_amount)}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums text-success">
-                              {formatNumber(installment.received_amount)}
-                            </TableCell>
-                            <TableCell
-                              className={cn(
-                                "text-right tabular-nums",
-                                installment.balance > 0 ? "text-critical" : "text-text-secondary"
-                              )}
-                            >
-                              {formatNumber(installment.balance)}
-                            </TableCell>
-                            <TableCell>
-                              <StatusBadge status={installment.status} />
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                        {installments.map((installment) => {
+                          const expanded = expandedInstallmentId === installment.id;
+                          const history = installmentHistory[installment.id];
+                          return (
+                            <React.Fragment key={installment.id}>
+                              <TableRow
+                                className={cn(
+                                  "cursor-pointer",
+                                  expanded ? "bg-surface-muted/50" : "hover:bg-surface-muted/30"
+                                )}
+                                onClick={() => toggleInstallmentHistory(installment.id)}
+                                title="Click to view upload/source history"
+                              >
+                                <TableCell className="whitespace-nowrap text-text-primary">
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <ChevronRight
+                                      className={cn(
+                                        "h-3.5 w-3.5 text-text-secondary transition-transform",
+                                        expanded && "rotate-90"
+                                      )}
+                                    />
+                                    {formatMonthYear(installment.due_month)}
+                                  </span>
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {formatNumber(installment.due_amount)}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums text-success">
+                                  {formatNumber(installment.received_amount)}
+                                </TableCell>
+                                <TableCell
+                                  className={cn(
+                                    "text-right tabular-nums",
+                                    installment.balance > 0 ? "text-critical" : "text-text-secondary"
+                                  )}
+                                >
+                                  {formatNumber(installment.balance)}
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge status={installment.status} />
+                                </TableCell>
+                              </TableRow>
+                              {expanded ? (
+                                <TableRow className="bg-surface-muted/20 hover:bg-surface-muted/20">
+                                  <TableCell colSpan={5} className="p-0">
+                                    <div className="border-t border-border px-4 py-3">
+                                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                                        Payment source / upload history
+                                      </div>
+                                      {history?.loading ? (
+                                        <p className="text-sm text-text-secondary">Loading source history…</p>
+                                      ) : history?.error ? (
+                                        <p className="text-sm text-critical">{history.error}</p>
+                                      ) : !history || history.entries.length === 0 ? (
+                                        <p className="text-sm text-text-secondary">
+                                          No upload history recorded for this installment.
+                                        </p>
+                                      ) : (
+                                        <div className="space-y-2">
+                                          {history.entries.map((entry) => (
+                                            <div
+                                              key={entry.id}
+                                              className="rounded-md border border-border bg-surface px-3 py-2 text-sm"
+                                            >
+                                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <span className="font-medium text-text-primary">
+                                                  {entry.file_name || (entry.upload_id ? `Upload #${entry.upload_id}` : "Unknown source")}
+                                                </span>
+                                                <span className="text-xs text-text-secondary">
+                                                  {entry.changed_at ? formatDate(entry.changed_at) : entry.upload_time ? formatDate(entry.upload_time) : "—"}
+                                                </span>
+                                              </div>
+                                              <div className="mt-1 text-xs text-text-secondary">
+                                                Received: {entry.previous_received === null ? "—" : formatNumber(entry.previous_received)} → {entry.new_received === null ? "—" : formatNumber(entry.new_received)}
+                                                {" · "}
+                                                Status: {(entry.previous_status || "—").replace(/_/g, " ")} → {(entry.new_status || "—").replace(/_/g, " ")}
+                                                {entry.upload_type ? ` · ${entry.upload_type}` : ""}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              ) : null}
+                            </React.Fragment>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>
