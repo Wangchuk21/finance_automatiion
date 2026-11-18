@@ -124,6 +124,7 @@ function currentQuickView({
 export function ContractsPage() {
   const { user } = useAuth();
   const canEditContracts = user?.role === "admin";
+  const canCloseContracts = user?.role === "admin" || user?.role === "finance_uploader";
 
   const [searchInput, setSearchInput] = React.useState("");
   const [search, setSearch] = React.useState("");
@@ -953,6 +954,7 @@ export function ContractsPage() {
           loading={detailLoading}
           error={detailError}
           canEdit={canEditContracts}
+          canClose={canCloseContracts}
           onClose={closeDetail}
           onContractClosed={(closedId) => {
             // Update local detail state
@@ -1083,6 +1085,7 @@ function ContractDetailDrawer({
   loading,
   error,
   canEdit,
+  canClose,
   onClose,
   onContractClosed,
   onContractUpdated,
@@ -1092,6 +1095,7 @@ function ContractDetailDrawer({
   loading: boolean;
   error: string | null;
   canEdit: boolean;
+  canClose: boolean;
   onClose: () => void;
   onContractClosed: (id: number) => void;
   onContractUpdated: (contract: ContractListItem) => void;
@@ -1218,7 +1222,7 @@ function ContractDetailDrawer({
                 Edit
               </Button>
             )}
-            {contract && !isClosed && (
+            {contract && canClose && !isClosed && (
               <Button
                 variant="outline"
                 size="sm"
