@@ -21,9 +21,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { notificationsApi, type InAppNotificationItem } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
 export function NotificationBell() {
+  const { user } = useAuth();
+  const canViewReminders = user?.role !== "viewer";
   const [unreadCount, setUnreadCount] = React.useState(0);
   const [items, setItems] = React.useState<InAppNotificationItem[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -208,20 +211,22 @@ export function NotificationBell() {
         <DropdownMenuSeparator className="m-0" />
 
         {/* Footer Quick Action */}
-        <div className="p-2.5 bg-neutral-light/30 flex items-center justify-between">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setIsOpen(false);
-              navigate("/reminders");
-            }}
-            className="w-full justify-center gap-1.5 text-xs font-medium text-primary hover:text-primary-dark h-8"
-          >
-            <Send className="h-3.5 w-3.5" />
-            <span>Open Customer SMS Reminders</span>
-          </Button>
-        </div>
+        {canViewReminders && (
+          <div className="p-2.5 bg-neutral-light/30 flex items-center justify-between">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setIsOpen(false);
+                navigate("/reminders");
+              }}
+              className="w-full justify-center gap-1.5 text-xs font-medium text-primary hover:text-primary-dark h-8"
+            >
+              <Send className="h-3.5 w-3.5" />
+              <span>Open Customer SMS Reminders</span>
+            </Button>
+          </div>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

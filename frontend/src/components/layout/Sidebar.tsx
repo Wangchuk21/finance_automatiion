@@ -28,9 +28,13 @@ const navigation = [
 export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const location = useLocation();
   const { user } = useAuth();
-  const visibleNavigation = navigation.filter(
-    (item) => item.href !== "/settings" || user?.role === "admin"
-  );
+  const visibleNavigation = navigation.filter((item) => {
+    if (item.href === "/settings") return user?.role === "admin";
+    if (item.href === "/reminders" || item.href === "/uploads") {
+      return user?.role !== "viewer";
+    }
+    return true;
+  });
 
   return (
     <TooltipProvider>

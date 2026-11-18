@@ -33,10 +33,24 @@ function AppRoutes() {
       <Route element={<RouteGuard />}>
         <Route path="/" element={<AppLayout />}>
           <Route index element={<Dashboard />} />
-          <Route path="uploads" element={<UploadPage />} />
+          <Route
+            path="uploads"
+            element={
+              <RouteGuard allowedRoles={["admin", "finance_uploader"]}>
+                <UploadPage />
+              </RouteGuard>
+            }
+          />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="contracts" element={<ContractsPage />} />
-          <Route path="reminders" element={<RemindersPage />} />
+          <Route
+            path="reminders"
+            element={
+              <RouteGuard allowedRoles={["admin", "finance_uploader"]}>
+                <RemindersPage />
+              </RouteGuard>
+            }
+          />
           <Route path="credit-check" element={<CreditCheckPage />} />
           <Route
             path="settings"

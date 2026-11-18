@@ -35,6 +35,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn, formatNumber } from "@/lib/utils";
+import { useAuth } from "@/context/AuthContext";
 import {
   dashboardApi,
   type CostCenterContractData,
@@ -53,6 +54,8 @@ const PRESET_OPTIONS = [
 ];
 
 export function Dashboard() {
+  const { user } = useAuth();
+  const canUpload = user?.role !== "viewer";
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = React.useState<DashboardData | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -462,12 +465,14 @@ export function Dashboard() {
               <CardTitle>Quick Actions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button className="w-full justify-start gap-3" asChild>
-                <Link to="/uploads">
-                  <span>Upload New File</span>
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
-              </Button>
+              {canUpload && (
+                <Button className="w-full justify-start gap-3" asChild>
+                  <Link to="/uploads">
+                    <span>Upload New File</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </Button>
+              )}
               <Button variant="outline" className="w-full justify-start gap-3" asChild>
                 <Link to="/reports">
                   <span>View Reports</span>
