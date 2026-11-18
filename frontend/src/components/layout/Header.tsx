@@ -4,6 +4,7 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, User, LogOut, Calendar, KeyRound } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { formatAsOfLabel, useAsOf } from "@/context/AsOfContext";
 import { ChangePasswordDialog } from "@/components/auth/ChangePasswordDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { Button } from "@/components/ui/button";
@@ -19,15 +20,14 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/comp
 
 interface HeaderProps {
   onMenuClick: () => void;
-  asOfDate?: string;
-  onAsOfDateChange?: (date: string) => void;
 }
 
-export function Header({ onMenuClick, asOfDate }: HeaderProps) {
+export function Header({ onMenuClick }: HeaderProps) {
   const [searchQuery, setSearchQuery] = React.useState("");
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { asOf, label, options, canSelect, loading, setAsOf } = useAsOf();
 
   const handleSignOut = async () => {
     try {
@@ -66,18 +66,41 @@ export function Header({ onMenuClick, asOfDate }: HeaderProps) {
 
         {/* Right: As-of date + User menu */}
         <div className="flex items-center gap-3">
-          {/* As-of Date */}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-2 rounded-lg px-3 py-1.5 bg-neutral-light/50 text-sm text-text-secondary">
-                  <Calendar className="h-4 w-4" />
-                  <span>{asOfDate || "Select date"}</span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">As-of date for reports</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          {/* As-of month cutoff */}
+          {canSelect ? (
+            <div className="flex items-center gap-2 rounded-lg px-2.5 py-1 bg-neutral-light/50">
+              <Calendar className="h-4 w-4 shrink-0 text-text-secondary" />
+              <select
+                aria-label="As-of month"
+                title="Show installments due on or before this month"
+                value={asOf || ""}
+                disabled={loading}
+                onChange={(event) => setAsOf(event.target.value || null)}
+                className="h-7 max-w-[150px] cursor-pointer bg-transparent text-sm font-medium text-text-primary focus:outline-none disabled:cursor-wait disabled:opacity-60"
+              >
+                <option value="">Latest (all months)</option>
+                {options.map((month) => (
+                  <option key={month} value={month}>
+                    {formatAsOfLabel(month)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-2 rounded-lg px-3 py-1.5 bg-neutral-light/50 text-sm text-text-secondary">
+                    <Calendar className="h-4 w-4" />
+                    <span>As of {label}</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  Figures include installments due on or before {label}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
 
           {/* Notifications */}
           <NotificationBell />

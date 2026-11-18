@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/table";
 import { cn, formatNumber } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
+import { useAsOf } from "@/context/AsOfContext";
 import {
   dashboardApi,
   type CostCenterContractData,
@@ -55,6 +56,7 @@ const PRESET_OPTIONS = [
 
 export function Dashboard() {
   const { user } = useAuth();
+  const { asOf } = useAsOf();
   const canUpload = user?.role !== "viewer";
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = React.useState<DashboardData | null>(null);
@@ -212,6 +214,7 @@ export function Dashboard() {
     if (toMonth) query.set("to", toMonth);
     if (region) query.set("region", region);
     if (channel && channel !== "all") query.set("channel", channel);
+    if (asOf) query.set("as_of", asOf);
     const qs = query.toString();
     return `/api/v1/dashboard/export${qs ? `?${qs}` : ""}`;
   };

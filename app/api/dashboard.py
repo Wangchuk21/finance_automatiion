@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import func, select, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.as_of import parse_as_of_month
 from app.core.auth import get_current_user, require_not_must_change_password
 from app.core.metrics import calculate_months_left
 from app.db.session import get_session
@@ -104,6 +105,23 @@ def resolve_date_bounds(
     return parse_month_param(from_str), parse_month_param(to_str)
 
 
+def resolve_bounds_with_as_of(
+    preset: Optional[str],
+    from_str: Optional[str],
+    to_str: Optional[str],
+    as_of: Optional[str],
+) -> Tuple[Optional[date], Optional[date], Optional[date]]:
+    """Resolve date bounds and apply the global as-of month as an upper bound."""
+    from_date, to_date = resolve_date_bounds(preset, from_str, to_str)
+    as_of_date = parse_as_of_month(as_of)
+    if as_of_date is not None:
+        if to_date is None or to_date > as_of_date:
+            to_date = as_of_date
+        if from_date is not None and from_date > as_of_date:
+            from_date = as_of_date
+    return from_date, to_date, as_of_date
+
+
 def build_filter_conditions(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
@@ -146,6 +164,24 @@ def build_filter_conditions(
     return conditions
 
 
+def as_of_conditions(as_of_date: Optional[date]) -> list:
+    """SQL conditions limiting instalments to the selected as-of month."""
+    return [Installment.due_month <= as_of_date] if as_of_date is not None else []
+
+
+def past_due_conditions(as_of_date: Optional[date]) -> list:
+    """Exclude the not-yet-due current month when no as-of cutoff is selected.
+
+    When an as-of month is selected it is already the global upper bound, so
+    its own instalments are fully included (selecting the latest month shows
+    the same figures as "Latest").
+    """
+    if as_of_date is not None:
+        return []
+    month_start = date(date.today().year, date.today().month, 1)
+    return [Installment.due_month < month_start]
+
+
 @router.get("/")
 async def get_dashboard(
     preset: Optional[str] = Query("all"),
@@ -153,27 +189,31 @@ async def get_dashboard(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    """Get all dashboard data in one call, filtered by date, region, and channel."""
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
+    """Get all dashboard data in one call, filtered by date, region, channel, and as-of month."""
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
 
-    kpis_data = await get_kpis_data(session, from_date, to_date, region, channel)
-    regions = await get_regions_data(session, from_date, to_date, region, channel)
-    aging = await get_aging_data(session, from_date, to_date, region, channel)
-    trend = await get_trend_data(session, from_date, to_date, region, channel)
+    kpis_data = await get_kpis_data(session, from_date, to_date, region, channel, as_of_date)
+    regions = await get_regions_data(session, from_date, to_date, region, channel, as_of_date)
+    aging = await get_aging_data(session, from_date, to_date, region, channel, as_of_date)
+    trend = await get_trend_data(session, from_date, to_date, region, channel, as_of_date)
     attention = await get_attention_data(session, region, channel)
     recent_uploads = await get_recent_uploads_data(session)
     tables = await get_contracts_table_data(session, from_date, to_date, region, channel)
 
     latest_upload = await session.execute(
-        select(Upload.as_of_date)
+        select(Upload.as_of_date, Upload.upload_time)
         .where(Upload.status == UploadStatus.CONFIRMED)
         .order_by(Upload.upload_time.desc())
         .limit(1)
     )
-    last_upload_date = latest_upload.scalar_one_or_none()
+    latest = latest_upload.first()
+    latest_as_of = latest[0] if latest else None
+    last_upload_at = latest[1] if latest else None
+    effective_as_of = as_of_date or latest_as_of
 
     return {
         "kpis": kpis_data["kpis"],
@@ -184,8 +224,9 @@ async def get_dashboard(
         "attention": attention,
         "recentUploads": recent_uploads,
         "tables": tables,
-        "asOfDate": last_upload_date.isoformat() if last_upload_date else None,
-        "lastUploadAt": last_upload_date.isoformat() if last_upload_date else None,
+        "asOfDate": effective_as_of.isoformat() if effective_as_of else None,
+        "selectedAsOf": as_of_date.isoformat() if as_of_date else None,
+        "lastUploadAt": last_upload_at.isoformat() if last_upload_at else None,
         "filters": {
             "preset": preset,
             "from": from_date.strftime("%Y-%m") if from_date else None,
@@ -196,20 +237,49 @@ async def get_dashboard(
     }
 
 
+@router.get("/as-of-dates")
+async def get_as_of_dates(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(require_not_must_change_password),
+):
+    """Months available as cutoff options, newest first.
+
+    The cutoff is applied to installment due months, so those are the primary
+    options. Confirmed upload as-of dates are included as well (normalised to
+    the first of the month) so the most recent upload is always selectable.
+    """
+    installment_rows = await session.execute(
+        select(Installment.due_month)
+        .where(Installment.due_month.isnot(None))
+        .distinct()
+    )
+    upload_rows = await session.execute(
+        select(Upload.as_of_date)
+        .where(Upload.status == UploadStatus.CONFIRMED, Upload.as_of_date.isnot(None))
+    )
+    months = set()
+    for (value,) in installment_rows.all():
+        months.add(date(value.year, value.month, 1))
+    for (value,) in upload_rows.all():
+        months.add(date(value.year, value.month, 1))
+    return {"dates": [value.isoformat() for value in sorted(months, reverse=True)]}
+
+
 async def get_kpis_data(
     session: AsyncSession,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     region: Optional[str] = None,
     channel: Optional[str] = None,
+    as_of_date: Optional[date] = None,
 ) -> dict:
     """Calculate KPI values (Due, Collected, Overdue, Outstanding in period, Total all time)."""
     period_conds = build_filter_conditions(from_date, to_date, region, channel, apply_date_filter=True)
     all_time_conds = build_filter_conditions(from_date, to_date, region, channel, apply_date_filter=False)
 
     # Only count installments whose payment month (due_month) has already passed
-    month_start = date(date.today().year, date.today().month, 1)
-    past_due_cond = Installment.due_month < month_start
+    past_due_conds = past_due_conditions(as_of_date)
+    received_as_of_cond = as_of_conditions(as_of_date)
 
     # 1. Due — SUM(due_amount) for installments in the period
     due_stmt = (
@@ -237,7 +307,7 @@ async def get_kpis_data(
             func.coalesce(func.sum(Installment.received_amount), 0).label("contract_rec"),
         )
         .join(Contract, Installment.contract_id == Contract.id)
-        .where(*period_conds, past_due_cond)
+        .where(*period_conds, *past_due_conds)
         .group_by(Installment.contract_id)
         .subquery()
     )
@@ -271,7 +341,10 @@ async def get_kpis_data(
                         + func.coalesce(Contract.gst, Decimal("0"))
                         - func.coalesce(
                             select(func.sum(Installment.received_amount))
-                            .where(Installment.contract_id == Contract.id)
+                            .where(
+                                Installment.contract_id == Contract.id,
+                                *received_as_of_cond,
+                            )
                             .scalar_subquery(),
                             Decimal("0"),
                         ),
@@ -295,7 +368,10 @@ async def get_kpis_data(
                         + func.coalesce(Contract.gst, Decimal("0"))
                         - func.coalesce(
                             select(func.sum(Installment.received_amount))
-                            .where(Installment.contract_id == Contract.id)
+                            .where(
+                                Installment.contract_id == Contract.id,
+                                *received_as_of_cond,
+                            )
                             .scalar_subquery(),
                             Decimal("0"),
                         ),
@@ -354,6 +430,7 @@ async def get_regions_data(
     to_date: Optional[date] = None,
     region: Optional[str] = None,
     channel: Optional[str] = None,
+    as_of_date: Optional[date] = None,
 ) -> List[dict]:
     """Get receivable (Overall Outstanding: Sales+GST-Received), collected, and balance due by region."""
     # 1. Overall Outstanding per region: SUM per contract of (Sales Amount + GST - total EMI received)
@@ -362,7 +439,10 @@ async def get_regions_data(
     )
     received_subquery = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(
+            Installment.contract_id == Contract.id,
+            *as_of_conditions(as_of_date),
+        )
         .scalar_subquery()
     )
     outstanding_stmt = (
@@ -441,6 +521,7 @@ async def get_cost_centers_data(
     to_date: Optional[date] = None,
     region: Optional[str] = None,
     channel: Optional[str] = None,
+    as_of_date: Optional[date] = None,
 ) -> List[dict]:
     """Get a cost-centre breakdown for a region.
 
@@ -455,7 +536,10 @@ async def get_cost_centers_data(
     )
     received_subquery = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(
+            Installment.contract_id == Contract.id,
+            *as_of_conditions(as_of_date),
+        )
         .scalar_subquery()
     )
     outstanding_stmt = (
@@ -535,6 +619,7 @@ async def get_cost_center_contracts_data(
     to_date: Optional[date] = None,
     region: Optional[str] = None,
     channel: Optional[str] = None,
+    as_of_date: Optional[date] = None,
 ) -> List[dict]:
     """List the individual contracts/customers under one cost centre.
 
@@ -549,7 +634,10 @@ async def get_cost_center_contracts_data(
 
     received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(
+            Installment.contract_id == Contract.id,
+            *as_of_conditions(as_of_date),
+        )
         .scalar_subquery()
     )
     period_conds = build_filter_conditions(
@@ -648,13 +736,13 @@ async def get_aging_data(
     to_date: Optional[date] = None,
     region: Optional[str] = None,
     channel: Optional[str] = None,
+    as_of_date: Optional[date] = None,
 ) -> List[dict]:
     """Get aging buckets (0-30, 31-60, 61-90, 91-120, 120+ days) matching Excel Balance Due."""
     period_conds = build_filter_conditions(from_date, to_date, region, channel, apply_date_filter=True)
 
     # Only count installments whose payment month (due_month) has already passed
-    month_start = date(date.today().year, date.today().month, 1)
-    past_due_cond = Installment.due_month < month_start
+    past_due_conds = past_due_conditions(as_of_date)
 
     contract_summary = (
         select(
@@ -681,7 +769,7 @@ async def get_aging_data(
             ).label("unpaid_count"),
         )
         .join(Contract, Installment.contract_id == Contract.id)
-        .where(*period_conds, past_due_cond)
+        .where(*period_conds, *past_due_conds)
         .group_by(Contract.id, Contract.monthly_deduction)
         .subquery()
     )
@@ -720,6 +808,7 @@ async def get_trend_data(
     to_date: Optional[date] = None,
     region: Optional[str] = None,
     channel: Optional[str] = None,
+    as_of_date: Optional[date] = None,
 ) -> List[dict]:
     """Get collection trend by month."""
     period_conds = build_filter_conditions(from_date, to_date, region, channel, apply_date_filter=True)
@@ -884,11 +973,12 @@ async def get_kpis(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
-    res = await get_kpis_data(session, from_date, to_date, region, channel)
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
+    res = await get_kpis_data(session, from_date, to_date, region, channel, as_of_date)
     return res["kpis"]
 
 
@@ -899,11 +989,12 @@ async def get_regions(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
-    return await get_regions_data(session, from_date, to_date, region, channel)
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
+    return await get_regions_data(session, from_date, to_date, region, channel, as_of_date)
 
 
 @router.get("/cost-centers")
@@ -913,11 +1004,12 @@ async def get_cost_centers(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
-    return await get_cost_centers_data(session, from_date, to_date, region, channel)
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
+    return await get_cost_centers_data(session, from_date, to_date, region, channel, as_of_date)
 
 
 @router.get("/cost-centers/contracts")
@@ -928,12 +1020,13 @@ async def get_cost_center_contracts(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
     return await get_cost_center_contracts_data(
-        session, cost_center, from_date, to_date, region, channel
+        session, cost_center, from_date, to_date, region, channel, as_of_date
     )
 
 
@@ -944,11 +1037,12 @@ async def get_aging(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
-    return await get_aging_data(session, from_date, to_date, region, channel)
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
+    return await get_aging_data(session, from_date, to_date, region, channel, as_of_date)
 
 
 @router.get("/trend")
@@ -958,11 +1052,12 @@ async def get_trend(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
-    return await get_trend_data(session, from_date, to_date, region, channel)
+    from_date, to_date, as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
+    return await get_trend_data(session, from_date, to_date, region, channel, as_of_date)
 
 
 @router.get("/attention")
@@ -990,10 +1085,11 @@ async def get_dashboard_tables(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
+    from_date, to_date, _as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
     return await get_contracts_table_data(session, from_date, to_date, region, channel)
 
 
@@ -1004,11 +1100,12 @@ async def export_dashboard_data(
     to: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
     """Export filtered dashboard installments to CSV. Never exports personal data."""
-    from_date, to_date = resolve_date_bounds(preset, from_, to)
+    from_date, to_date, _as_of_date = resolve_bounds_with_as_of(preset, from_, to, as_of)
     period_conds = build_filter_conditions(from_date, to_date, region, channel, apply_date_filter=True)
     stmt = (
         select(
@@ -1127,37 +1224,44 @@ async def get_overdue_report(
     brand: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     limit: int = Query(500, ge=1, le=10000),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
     filters = _ReportFilters.build(session, region, cost_center, channel, brand, state)
+    as_of_date = parse_as_of_month(as_of)
+    installment_as_of = as_of_conditions(as_of_date)
 
     cc_label = func.coalesce(func.nullif(func.trim(Contract.cost_center), ""), "Unassigned")
     received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *installment_as_of)
         .scalar_subquery()
     )
     total_due_subq = (
         select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *installment_as_of)
         .scalar_subquery()
     )
     period_received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id, Installment.received_amount > 0)
+        .where(
+            Installment.contract_id == Contract.id,
+            Installment.received_amount > 0,
+            *installment_as_of,
+        )
         .scalar_subquery()
     )
 
-    # Overdue = balance due on installments due in the past (before current month start)
-    from datetime import date as _date
-
-    month_start = _date(date.today().year, date.today().month, 1)
+    # Overdue = balance due on installments already due (up to the as-of month,
+    # or before the current month when no cutoff is selected).
+    past_due_conds = past_due_conditions(as_of_date)
     overdue_due_subq = (
         select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
         .where(
             Installment.contract_id == Contract.id,
-            Installment.due_month < month_start,
+            *past_due_conds,
+            *installment_as_of,
         )
         .scalar_subquery()
     )
@@ -1165,7 +1269,8 @@ async def get_overdue_report(
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
         .where(
             Installment.contract_id == Contract.id,
-            Installment.due_month < month_start,
+            *past_due_conds,
+            *installment_as_of,
         )
         .scalar_subquery()
     )
@@ -1245,19 +1350,21 @@ async def get_report_by_region(
     channel: Optional[str] = Query(None),
     brand: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
     filters = _ReportFilters.build(session, region, None, channel, brand, state)
+    installment_as_of = as_of_conditions(parse_as_of_month(as_of))
     cc_label = func.coalesce(func.nullif(func.trim(Contract.cost_center), ""), "Unassigned")
     received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *installment_as_of)
         .scalar_subquery()
     )
     total_due_subq = (
         select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *installment_as_of)
         .scalar_subquery()
     )
 
@@ -1306,20 +1413,22 @@ async def get_report_by_brand(
     channel: Optional[str] = Query(None),
     brand: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
     """Summary of contracts and collections grouped by brand (income/performance by brand)."""
     filters = _ReportFilters.build(session, region, None, channel, brand, state)
+    installment_as_of = as_of_conditions(parse_as_of_month(as_of))
     brand_label = func.coalesce(func.nullif(func.trim(Contract.brand), ""), "Unassigned")
     received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *installment_as_of)
         .scalar_subquery()
     )
     total_due_subq = (
         select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *installment_as_of)
         .scalar_subquery()
     )
 
@@ -1370,6 +1479,7 @@ async def get_dues_report(
     from_month: Optional[str] = Query(None),
     to_month: Optional[str] = Query(None),
     limit: int = Query(500, ge=1, le=10000),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_not_must_change_password),
 ):
@@ -1391,12 +1501,15 @@ async def get_dues_report(
 
     fm = parse_month(from_month) if from_month else None
     tm = parse_month(to_month) if to_month else None
+    am = parse_as_of_month(as_of)
     if fm:
         conditions.append(Installment.due_month >= fm)
-    if tm:
-        conditions.append(Installment.due_month <= tm)
-    else:
-        conditions.append(Installment.due_month <= _date(date.today().year, date.today().month, 1))
+    # Upper bound: the earlier of the explicit to_month, the as-of month, and
+    # (when neither is given) the current month.
+    upper = tm or _date(date.today().year, date.today().month, 1)
+    if am is not None and am < upper:
+        upper = am
+    conditions.append(Installment.due_month <= upper)
 
     stmt = (
         select(

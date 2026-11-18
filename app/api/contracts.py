@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.as_of import parse_as_of_month
 from app.core.auth import get_current_user, require_role
 from app.core.confirm import verify_confirm_code
 from app.core.installments import determine_installment_status
@@ -196,10 +197,15 @@ async def list_contracts(
     order: str = Query("desc"),
     skip: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=10000),
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
 ):
     """List contracts with filters, sorting, pagination, and a filtered summary."""
     conditions = []
+    as_of_date = parse_as_of_month(as_of)
+    as_of_conds = (
+        [Installment.due_month <= as_of_date] if as_of_date is not None else []
+    )
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -250,13 +256,13 @@ async def list_contracts(
 
     received_subq = (
         select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *as_of_conds)
         .correlate(Contract)
         .scalar_subquery()
     )
     total_due_subq = (
         select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
-        .where(Installment.contract_id == Contract.id)
+        .where(Installment.contract_id == Contract.id, *as_of_conds)
         .correlate(Contract)
         .scalar_subquery()
     )
@@ -390,19 +396,24 @@ async def contract_facets(
 
 
 async def _contract_totals(
-    session: AsyncSession, contract_id: int
+    session: AsyncSession,
+    contract_id: int,
+    as_of_date: Optional[date] = None,
 ) -> Tuple[Decimal, Decimal]:
     """Return (received, total_due) summed across a contract's installments."""
+    as_of_conds = (
+        [Installment.due_month <= as_of_date] if as_of_date is not None else []
+    )
     received = (
         await session.execute(
             select(func.coalesce(func.sum(Installment.received_amount), Decimal("0")))
-            .where(Installment.contract_id == contract_id)
+            .where(Installment.contract_id == contract_id, *as_of_conds)
         )
     ).scalar()
     total_due = (
         await session.execute(
             select(func.coalesce(func.sum(Installment.due_amount), Decimal("0")))
-            .where(Installment.contract_id == contract_id)
+            .where(Installment.contract_id == contract_id, *as_of_conds)
         )
     ).scalar()
     return received or Decimal("0"), total_due or Decimal("0")
@@ -411,14 +422,17 @@ async def _contract_totals(
 @router.get("/{contract_id}")
 async def get_contract(
     contract_id: int,
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get one contract with its all-time financial summary."""
+    """Get one contract with its financial summary up to the as-of month."""
     contract = await session.get(Contract, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    received, total_due = await _contract_totals(session, contract_id)
+    received, total_due = await _contract_totals(
+        session, contract_id, parse_as_of_month(as_of)
+    )
     return _serialize_contract(contract, received, total_due)
 
 
@@ -481,17 +495,23 @@ async def update_contract(
 @router.get("/{contract_id}/installments")
 async def get_contract_installments(
     contract_id: int,
+    as_of: Optional[str] = Query(None, description="As-of month (YYYY-MM)"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get the installment schedule for one contract."""
+    """Get the installment schedule for one contract up to the as-of month."""
     contract = await session.get(Contract, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
 
+    as_of_date = parse_as_of_month(as_of)
+    conditions = [Installment.contract_id == contract_id]
+    if as_of_date is not None:
+        conditions.append(Installment.due_month <= as_of_date)
+
     installments = (
         await session.execute(
             select(Installment)
-            .where(Installment.contract_id == contract_id)
+            .where(*conditions)
             .order_by(Installment.due_month.asc())
         )
     ).scalars().all()

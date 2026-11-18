@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/context/AuthContext";
+import { AsOfProvider } from "@/context/AsOfContext";
 import { RouteGuard, PublicOnlyGuard } from "@/components/auth/RouteGuard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -72,12 +73,14 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <TooltipProvider>
-          <ErrorBoundary>
-            <AppRoutes />
-          </ErrorBoundary>
-          <Toaster />
-        </TooltipProvider>
+        <AsOfProvider>
+          <TooltipProvider>
+            <ErrorBoundary>
+              <AppRoutes />
+            </ErrorBoundary>
+            <Toaster />
+          </TooltipProvider>
+        </AsOfProvider>
       </AuthProvider>
     </BrowserRouter>
   );

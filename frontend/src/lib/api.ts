@@ -1,5 +1,36 @@
 const API_BASE = "/api/v1";
 
+/** Shared storage key for the selected as-of month. */
+export const AS_OF_STORAGE_KEY = "finance-bt-as-of-month";
+
+/** Read the persisted month at module load so the very first GET is filtered. */
+function readInitialAsOf(): string | null {
+  try {
+    const raw = localStorage.getItem(AS_OF_STORAGE_KEY);
+    const match = raw?.match(/^(\d{4})-(\d{2})/);
+    if (!match) return null;
+    const month = Number(match[2]);
+    return month >= 1 && month <= 12
+      ? `${match[1]}-${String(month).padStart(2, "0")}`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Global as-of month (YYYY-MM) applied to every GET request. Set by AsOfContext. */
+let globalAsOf: string | null = readInitialAsOf();
+
+export function setGlobalAsOf(value: string | null): void {
+  globalAsOf = value;
+}
+
+function withAsOf(url: string, method: string): string {
+  if (!globalAsOf || method !== "GET") return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}as_of=${encodeURIComponent(globalAsOf)}`;
+}
+
 /** Convert a FastAPI error detail to a safe, readable string.
  *  - string  → returned as-is
  *  - list    → "field: message" per item (field = last segment of loc), no submitted values
@@ -20,7 +51,8 @@ export function formatError(detail: unknown): string {
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${url}`, {
+  const method = (options?.method || "GET").toUpperCase();
+  const response = await fetch(`${API_BASE}${withAsOf(url, method)}`, {
     credentials: "include", // Include cookies for session auth
     headers: {
       "Content-Type": "application/json",
@@ -265,7 +297,8 @@ export interface DashboardData {
   trend: TrendData[];
   attention: AttentionItem[];
   recentUploads: UploadRowData[];
-  asOfDate: string;
+  asOfDate: string | null;
+  selectedAsOf?: string | null;
   lastUploadAt: string | null;
   filters?: DashboardFilterParams;
 }
@@ -322,6 +355,10 @@ export const dashboardApi = {
 
   async getRecentUploads(): Promise<UploadRowData[]> {
     return fetchJson<UploadRowData[]>("/dashboard/uploads");
+  },
+
+  async getAsOfDates(): Promise<{ dates: string[] }> {
+    return fetchJson<{ dates: string[] }>("/dashboard/as-of-dates");
   },
 };
 
